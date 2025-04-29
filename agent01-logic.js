@@ -155,7 +155,10 @@ export const AppState = {
     // Speech Recognition State
     speechRecognition: null,
     isRecording: false,
-    availableVoices: []
+    availableVoices: [],
+
+    // Mobile Detection
+    isMobile: false
 };
 
 // =========================================================
@@ -210,53 +213,49 @@ export const DOM = {
  * Initialize the app
  */
 async function initializeApp() {
-    console.log("Initializing Agent 01...");
-
-    // Check required libraries
-    if (!window.hljs) console.warn("Warning: highlight.js not loaded, code highlighting will be disabled");
-    if (!window.marked) console.warn("Warning: marked.js not loaded, Markdown rendering will be disabled");
-    if (!window.DOMPurify) console.warn("Warning: DOMPurify not loaded, HTML sanitization will be compromised");
+    // First, detect mobile devices for appropriate handling
+    AppState.isMobile = window.innerWidth < 768;
     
-    // Load routing prompt first
-    await loadRoutingPrompt().then((success) => {
-        if (!success) {
-            console.warn("Routing prompt could not be loaded. Using fallback.");
-        }
-    });
-    
-    // Initialize all systems
-    loadSettings();
-    loadSelectedModel();
-    initializeAnimation();
-    initializeSpeechRecognition();
-    initializeTextToSpeech();
-    initializeVoices();
-    setupEventListeners();
-    loadChatHistory();
-    
-    // Update UI elements
+    // Initialize UI components
     UI.updateSettingsUI();
-    DOM.sendButton.disabled = DOM.userInput.value.trim() === '';
-    DOM.stopButton.classList.add('hidden');
     
-    // Set default message if empty (new chat)
-    if (AppState.chatHistory.length === 0 && !AppState.isWelcomeScreenVisible) {
-        const greeting = "Hello! I'm Agent 01, your AI assistant. How can I help you today?";
-        const msg = UI.addMessageToChat(greeting, 'assistant');
-        AppState.chatHistory.push({ 
-            role: 'assistant', 
-            content: greeting, 
-            id: msg.id,
-            isGreeting: true // Mark as greeting to exclude from API calls
-        });
-        saveChatHistory();
+    // Initialize Config with appropriate defaults
+    // Adjust settings for mobile if needed
+    if (AppState.isMobile) {
+        // Reduce particle count on mobile for better performance
+        CONFIG.particles.count = Math.min(CONFIG.particles.count, 20000);
+        // Set smaller initial size for particles on mobile
+        CONFIG.particles.size = 0.018;
     }
     
-    UI.updateTokenCount();
-    updateStatusBar();
-    addRippleEffectListeners();
+    // Load previous settings
+    loadSettings();
+    loadChatHistory();
+    loadSelectedModel();
     
-    console.log("Agent 01 initialized and ready.");
+    // Set up event listeners
+    setupEventListeners();
+    
+    // Initialize visualization
+    if (!AppState.isMobile) {
+        // On desktop, initialize animation immediately
+        initializeAnimation();
+    } else {
+        // On mobile, delay animation initialization for better initial load
+        setTimeout(initializeAnimation, 500);
+    }
+    
+    // Initialize speech recognition and TTS
+    initializeSpeechRecognition();
+    initializeTextToSpeech();
+    
+    // Load the routing prompt
+    await loadRoutingPrompt();
+    
+    // Set status to ready
+    updateStatusBar("Ready");
+    
+    console.log("App initialized");
 }
 
 /**
@@ -362,6 +361,20 @@ function setupEventListeners() {
     DOM.resetSettingsButton.addEventListener('click', handleResetSettings);
     DOM.micButton.addEventListener('click', handleMicButtonClick);
     DOM.chatMessages.addEventListener('click', handleMessageActions);
+
+    // Add orientation change event for mobile devices
+    window.addEventListener('orientationchange', function() {
+        // Small delay to allow browser to complete orientation change
+        setTimeout(() => {
+            if (Animation && typeof Animation.handleResize === 'function') {
+                Animation.handleResize();
+            }
+            // Ensure scrolling to bottom after orientation change
+            if (DOM.chatMessages) {
+                DOM.chatMessages.scrollTop = DOM.chatMessages.scrollHeight;
+            }
+        }, 300);
+    });
 }
 
 // =========================================================

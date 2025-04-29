@@ -73,8 +73,10 @@ const Animation = {
             antialias: true,
             alpha: true
         });
-        this.renderer.setSize(window.innerWidth, window.innerHeight);
-        this.renderer.setPixelRatio(window.devicePixelRatio);
+        // Set size to actual display size for mobile optimization
+        const pixelRatio = Math.min(window.devicePixelRatio, 2); // Limit pixel ratio for performance
+        this.renderer.setPixelRatio(pixelRatio);
+        this.handleResize(); // Call resize immediately to set correct size
         this.renderer.setClearColor(CONFIG.particles.colors.background, 0);
 
         // Add lighting
@@ -459,12 +461,25 @@ const Animation = {
      */
     handleResize: function() {
         if (!this.camera || !this.renderer) return;
+        
+        // Get device dimensions
         const width = window.innerWidth;
         const height = window.innerHeight;
+        
+        // Update camera aspect ratio
         this.camera.aspect = width / height;
         this.camera.updateProjectionMatrix();
-        this.renderer.setSize(width, height);
-        this.renderer.setPixelRatio(window.devicePixelRatio);
+        
+        // Update renderer size - use actual client size to match display
+        this.renderer.setSize(width, height, false);
+        
+        // For mobile devices, adjust particle size/density
+        const isMobile = width < 768;
+        if (this.particleMaterial) {
+            // Adjust particle size for better mobile performance
+            this.particleMaterial.uniforms.u_size.value = 
+                isMobile ? CONFIG.particles.size * 1.2 : CONFIG.particles.size;
+        }
     },
 
     /**

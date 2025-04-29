@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
     <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
     <title>Agent 01</title>
 
     <!-- STYLESHEET SECTION -->
@@ -90,7 +90,7 @@
             flex-direction: column;
             z-index: 10;
             backdrop-filter: blur(0px);
-            padding: 20px;
+            padding: 20px 10px;
         }
 
         #chat-messages {
@@ -98,7 +98,7 @@
             overflow-y: auto;
             margin-bottom: 20px;
             scroll-behavior: smooth;
-            padding: 20px;
+            padding: 10px;
             display: flex;
             flex-direction: column;
             gap: 16px;
@@ -130,7 +130,7 @@
         }
 
         .message {
-            max-width: 70%;
+            max-width: 80%;
             padding: 12px 16px;
             border-radius: 18px;
             line-height: 1.5;
@@ -217,7 +217,7 @@
             background-color: rgba(40, 40, 40, 0.8);
             border-radius: 28px;
             padding: 6px 8px;
-            margin-bottom: 20px;
+            margin-bottom: 10px;
             border: 1px solid rgba(80, 80, 80, 0.5);
             box-shadow: 0 2px 8px rgba(0, 0, 0, 0.3), inset 0 1px 2px rgba(0, 0, 0, 0.2);
             transition: all 0.3s ease, box-shadow 0.3s ease;
@@ -247,10 +247,11 @@
             background: transparent;
             border: none;
             color: #FFFFFF;
-            padding: 10px 12px; /* Adjusted padding */
+            padding: 8px 10px; /* Adjusted padding */
             font-size: 16px;
             outline: none;
             line-height: 1.4; /* Ensure consistent line height */
+            min-height: 40px;
         }
 
         /* === Send Button Redesign === */
@@ -259,8 +260,8 @@
             color: #1A1A1A; /* Dark text for contrast */
             border: none;
             border-radius: 50%;
-            width: 44px; /* Slightly larger */
-            height: 44px;
+            width: 42px; /* Slightly reduced for mobile */
+            height: 42px;
             cursor: pointer;
             transition: all 0.2s ease-out; /* Faster transition */
             display: flex;
@@ -284,8 +285,8 @@
         }
 
         #send-button svg {
-            width: 22px; /* Adjusted size */
-            height: 22px;
+            width: 20px; /* Adjusted size */
+            height: 20px;
             stroke: #1A1A1A; /* Use stroke for this icon */
             stroke-width: 2;
             transition: filter 0.2s ease; /* Transition for glow */
@@ -305,8 +306,8 @@
             color: #ccc;
             border: 1px solid #555;
             border-radius: 50%;
-            width: 44px;
-            height: 44px;
+            width: 42px; /* Slightly reduced for mobile */
+            height: 42px;
             cursor: pointer;
             transition: all 0.2s ease-out;
             display: flex;
@@ -319,8 +320,8 @@
         }
 
         #mic-button svg {
-            width: 20px;
-            height: 20px;
+            width: 18px; /* Slightly reduced size */
+            height: 18px;
             fill: currentColor; /* Use fill for this icon */
         }
 
@@ -365,8 +366,8 @@
             color: white;
             border: none;
             border-radius: 50%;
-            width: 44px;
-            height: 44px;
+            width: 42px; /* Slightly reduced for mobile */
+            height: 42px;
             cursor: pointer;
             transition: all 0.2s ease-out;
             display: flex;
@@ -378,8 +379,8 @@
         }
 
         #stop-button svg { /* Style the SVG if you replace the emoji */
-            width: 18px;
-            height: 18px;
+            width: 16px; /* Slightly reduced size */
+            height: 16px;
             fill: currentColor;
         }
 
@@ -602,13 +603,13 @@
             transition: all 0.3s ease;
             position: relative; /* For ripple */
             overflow: hidden; /* For ripple */
-            margin-right: 8px; /* Space between button and input */
+            margin-right: 4px; /* Reduced space between button and input for mobile */
             flex-shrink: 0; /* Prevent button from shrinking */
         }
 
         #settings-button svg {
-            width: 22px; /* Consistent icon size */
-            height: 22px;
+            width: 20px; /* Slightly smaller for mobile */
+            height: 20px;
             fill: currentColor;
             transition: transform 0.4s ease-in-out; /* Smooth rotation */
         }
@@ -936,21 +937,40 @@
 
         /* Media queries for responsive design */
         @media (max-width: 768px) {
-            #chat-messages, #input-container {
-                max-width: 100%;
-                padding: 15px;
+            #chat-container {
+                padding: 10px 5px;
+            }
+            
+            #chat-messages {
+                padding: 5px;
+                margin-bottom: 10px;
             }
 
             .message {
                 max-width: 85%; /* Allow messages to be wider on mobile */
-            }
-
-            #settings-button {
-                right: 10px; /* Bring settings button inside on smaller screens */
+                padding: 10px 12px;
+                font-size: 15px;
             }
 
             #settings-panel {
                 width: 85%; /* Make settings panel wider on mobile */
+            }
+            
+            #input-container {
+                padding: 4px 6px;
+            }
+            
+            #user-input {
+                padding: 6px 8px;
+                min-height: 36px;
+            }
+            
+            #status-bar {
+                padding: 6px 10px;
+            }
+            
+            .tech-transfer-indicator {
+                font-size: 0.8em;
             }
         }
 
@@ -1330,6 +1350,39 @@
     <!-- Main Application Logic Script (Loads as Module) -->
     <!-- This script will import the animation module -->
     <script type="module" src="agent01-logic.js"></script>
+
+    <!-- Before closing body tag, add this script for mobile input handling -->
+    <script>
+        // Mobile input focus handling
+        document.addEventListener('DOMContentLoaded', function() {
+            const userInput = document.getElementById('user-input');
+            const chatContainer = document.getElementById('chat-container');
+            
+            if (userInput && chatContainer) {
+                // On mobile, when input gets focus, scroll to keep it in view
+                userInput.addEventListener('focus', function() {
+                    // Small delay to let keyboard appear
+                    setTimeout(() => {
+                        window.scrollTo(0, document.body.scrollHeight);
+                        chatContainer.scrollTop = chatContainer.scrollHeight;
+                    }, 300);
+                });
+                
+                // Handle virtual keyboard appearance
+                let viewportHeight = window.innerHeight;
+                window.addEventListener('resize', function() {
+                    // If height significantly decreases, keyboard likely appeared
+                    if (window.innerHeight < viewportHeight * 0.75) {
+                        // Keep input visible when keyboard is shown
+                        setTimeout(() => {
+                            window.scrollTo(0, document.body.scrollHeight);
+                        }, 100);
+                    }
+                    viewportHeight = window.innerHeight;
+                });
+            }
+        });
+    </script>
 
 </body>
 </html>
