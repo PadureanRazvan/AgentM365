@@ -65,7 +65,14 @@ const Animation = {
             0.1,
             1000
         );
-        this.camera.position.z = 5;
+        
+        // Adjust camera position based on device
+        if (AppState.isMobile) {
+            // Move camera slightly further back on mobile
+            this.camera.position.z = 6;
+        } else {
+            this.camera.position.z = 5;
+        }
 
         // Create renderer
         this.renderer = new THREE.WebGLRenderer({
@@ -473,12 +480,23 @@ const Animation = {
         // Update renderer size - use actual client size to match display
         this.renderer.setSize(width, height, false);
         
-        // For mobile devices, adjust particle size/density
+        // For mobile devices, adjust particle size/density and ensure proper positioning
         const isMobile = width < 768;
         if (this.particleMaterial) {
             // Adjust particle size for better mobile performance
             this.particleMaterial.uniforms.u_size.value = 
                 isMobile ? CONFIG.particles.size * 1.2 : CONFIG.particles.size;
+        }
+        
+        // Center the particles in the view for mobile
+        if (this.particles) {
+            if (isMobile) {
+                // Adjust position for mobile - reset any rotation-based offset
+                this.particles.position.set(0, -0.5, 0); // Slightly lower on mobile for better centering
+            } else {
+                // Reset to center for desktop
+                this.particles.position.set(0, 0, 0);
+            }
         }
     },
 

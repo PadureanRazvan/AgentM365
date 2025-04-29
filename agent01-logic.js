@@ -1027,7 +1027,10 @@ function handleWelcome() {
         saveChatHistory();
         UI.updateTokenCount();
         
-        DOM.userInput.focus();
+        // Only set focus on desktop devices to prevent mobile keyboard from appearing
+        if (!AppState.isMobile) {
+            DOM.userInput.focus();
+        }
     }, 1000);
 }
 
