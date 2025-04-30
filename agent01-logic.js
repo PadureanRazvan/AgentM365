@@ -18,7 +18,8 @@ import {
     formatTechnicalMessages,
     parseRoutingResponse,
     callLlmApi,
-    calculateTokenCount
+    calculateTokenCount,
+    processRoutingQuery
 } from './AgentAPI-rules.js';
 
 // =========================================================
@@ -1201,54 +1202,87 @@ async function executeRoutingPhase() {
         // Create new abort controller for this request
         AppState.abortController = new AbortController();
         
-        // Use imported function to format messages for routing
-        const messages = formatRoutingMessages(
-            AppState.routingPrompt, 
-            AppState.chatHistory, 
+        // Call the processRoutingQuery function from AgentAPI-rules.js
+        const routingResult = await processRoutingQuery(
+            AppState.routingPrompt,
+            AppState.chatHistory,
             AppState.currentMessage,
-            AppState.originalUserQuery
-        );
-        
-        if (!messages) throw new Error("Failed to format messages for routing.");
-
-        // Call API using imported function
-        const response = await callLlmApi(
-            messages, 
-            AppState.apiKey, 
-            AppState.selectedModel, 
-            AppState.settings, 
+            AppState.originalUserQuery,
+            AppState.apiKey,
+            AppState.selectedModel,
+            AppState.settings,
             AppState.abortController
         );
 
-        // Use imported function to parse the response
-        const { isTechIdentified, technologyName, explanation } = parseRoutingResponse(response);
+        // Handle the result based on the action field
+        switch (routingResult.action) {
+            case 'handoff':
+                // Technology Found - Proceed to Handoff
+                AppState.identifiedTechnology = routingResult.technology;
+                AppState.routingAgentOutputText = routingResult.explanation;
+                AppState.conversationPhase = 'technical_handoff';
 
-        if (isTechIdentified && technologyName) {
-            // Technology Found - Proceed to Handoff
-            AppState.identifiedTechnology = technologyName;
-            AppState.routingAgentOutputText = explanation; // Store the explanation part
-            AppState.conversationPhase = 'technical_handoff';
+                // Finalize the Routing message WITH the transition indicator
+                UI.finalizeAIMessage(aiMessageId, routingResult.explanation, false, true, routingResult.technology);
 
-            // Finalize the Routing message WITH the transition indicator
-            UI.finalizeAIMessage(aiMessageId, explanation, false, true, technologyName); // Add new args for transition
+                // Add routing response to history
+                AppState.chatHistory.push({ 
+                    role: 'assistant', 
+                    content: routingResult.rawResponse, 
+                    id: aiMessageId 
+                });
+                saveChatHistory();
 
-            // Add routing response to history (important for context if needed later)
-            AppState.chatHistory.push({ role: 'assistant', content: response, id: aiMessageId }); // Store raw response
-            saveChatHistory();
+                // Trigger the Technical Agent with a small delay
+                setTimeout(() => {
+                    executeTechnicalPhase();
+                }, 500);
+                break;
 
-            // Trigger the Technical Agent (don't wait for user input)
-            // Add a small delay for the user to see the transition message
-            setTimeout(() => {
-                executeTechnicalPhase();
-            }, 500); // 500ms delay
+            case 'ask':
+                // Scoping Question or simple response - Finalize normally
+                UI.finalizeAIMessage(aiMessageId, routingResult.explanation, false);
+                AppState.chatHistory.push({ 
+                    role: 'assistant', 
+                    content: routingResult.rawResponse, 
+                    id: aiMessageId 
+                });
+                saveChatHistory();
+                UI.setThinkingState(false); // Stop thinking indicator
+                AppState.conversationPhase = 'routing'; // Ready for user's next input
+                break;
 
-        } else {
-            // Scoping Question or simple response - Finalize normally
-            UI.finalizeAIMessage(aiMessageId, response, false); // Finalize routing message
-            AppState.chatHistory.push({ role: 'assistant', content: response, id: aiMessageId });
-            saveChatHistory();
-            UI.setThinkingState(false); // Stop thinking indicator
-            AppState.conversationPhase = 'routing'; // Ready for user's next input
+            case 'error':
+                // Handle error
+                const errorMessage = routingResult.message || "Routing error.";
+                AppState.lastError = errorMessage;
+                UI.finalizeAIMessage(aiMessageId, `Error: ${errorMessage}`, true);
+                AppState.chatHistory.push({ 
+                    role: 'assistant', 
+                    content: `Error: ${errorMessage}`, 
+                    id: aiMessageId, 
+                    isError: true 
+                });
+                saveChatHistory();
+                UI.setThinkingState(false, `Error: ${errorMessage.substring(0, 50)}...`);
+                AppState.conversationPhase = 'routing'; // Reset phase on error
+                break;
+
+            default:
+                // Unexpected result
+                console.error("Unexpected routing result action:", routingResult.action);
+                AppState.lastError = "Unexpected routing result";
+                UI.finalizeAIMessage(aiMessageId, "Error: Unexpected routing result", true);
+                AppState.chatHistory.push({ 
+                    role: 'assistant', 
+                    content: "Error: Unexpected routing result", 
+                    id: aiMessageId, 
+                    isError: true 
+                });
+                saveChatHistory();
+                UI.setThinkingState(false, "Error: Unexpected routing result");
+                AppState.conversationPhase = 'routing'; // Reset phase
+                break;
         }
 
     } catch (error) {

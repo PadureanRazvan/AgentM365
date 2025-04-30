@@ -358,6 +358,100 @@ export function parseRoutingResponse(responseText) {
 }
 
 /**
+ * Process a routing query and make a decision about the next action
+ * This function orchestrates the entire routing decision process:
+ * 1. Format messages for the routing agent
+ * 2. Call the LLM API
+ * 3. Parse the response
+ * 4. Determine the next action based on the parsed response
+ *
+ * @param {string} routingPrompt - The prompt for the routing agent
+ * @param {Array} chatHistory - The conversation history
+ * @param {Object} currentMessage - The current message being processed
+ * @param {string} originalUserQuery - The original user query
+ * @param {string} apiKey - The API key for the LLM
+ * @param {string} selectedModel - The selected model
+ * @param {Object} settings - The settings for the API call
+ * @param {AbortController} abortController - The abort controller for the API call
+ * @returns {Object} An object with the next action to take:
+ *   - status: 'success' or 'error'
+ *   - action: 'handoff', 'ask', or 'error'
+ *   - technology: The identified technology (if action is 'handoff')
+ *   - explanation: The explanation or question from the agent
+ *   - rawResponse: The raw response from the LLM
+ */
+export async function processRoutingQuery(
+    routingPrompt, 
+    chatHistory, 
+    currentMessage, 
+    originalUserQuery,
+    apiKey,
+    selectedModel,
+    settings,
+    abortController
+) {
+    try {
+        // 1. Format messages for routing
+        const messages = formatRoutingMessages(
+            routingPrompt, 
+            chatHistory, 
+            currentMessage,
+            originalUserQuery
+        );
+        
+        if (!messages) {
+            return {
+                status: 'error',
+                action: 'error',
+                message: 'Failed to format messages for routing.',
+                rawResponse: null
+            };
+        }
+
+        // 2. Call the LLM API
+        const response = await callLlmApi(
+            messages, 
+            apiKey, 
+            selectedModel, 
+            settings, 
+            abortController
+        );
+
+        // 3. Parse the response
+        const { isTechIdentified, technologyName, explanation } = parseRoutingResponse(response);
+
+        // 4. Determine the next action based on the parsed response
+        if (isTechIdentified && technologyName) {
+            // Technology identified - handoff to technical agent
+            return {
+                status: 'success',
+                action: 'handoff',
+                technology: technologyName,
+                explanation: explanation,
+                rawResponse: response
+            };
+        } else {
+            // Scoping question or simple response - ask user for more info
+            return {
+                status: 'success',
+                action: 'ask',
+                explanation: explanation,
+                rawResponse: response
+            };
+        }
+    } catch (error) {
+        // Handle errors
+        console.error("Error in processRoutingQuery:", error);
+        return {
+            status: 'error',
+            action: 'error',
+            message: error.message || "Unknown error in routing process",
+            rawResponse: null
+        };
+    }
+}
+
+/**
  * Call LLM API
  */
 export async function callLlmApi(messages, apiKey, selectedModel, settings, abortController) {
