@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
     <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
     <title>Agent 01</title>
 
     <!-- STYLESHEET SECTION -->
@@ -97,6 +97,7 @@
             z-index: 10;
             backdrop-filter: blur(0px);
             padding: 20px 10px;
+            padding-bottom: env(safe-area-inset-bottom, 20px); /* Add safe area padding */
         }
 
         #chat-messages {
@@ -232,6 +233,8 @@
             max-width: 1200px; /* Match chat messages max-width */
             margin-left: auto;
             margin-right: auto;
+            position: relative; /* Add this for better positioning */
+            z-index: 20; /* Ensure it stays above other elements */
         }
 
         /* Focus state for input container */
@@ -254,10 +257,11 @@
             border: none;
             color: #FFFFFF;
             padding: 8px 10px; /* Adjusted padding */
-            font-size: 16px;
+            font-size: 16px; /* Ensuring no auto-zoom on iOS */
             outline: none;
             line-height: 1.4; /* Ensure consistent line height */
             min-height: 40px;
+            width: 0; /* This forces it to properly use flex-grow */
         }
 
         /* === Send Button Redesign === */
@@ -980,6 +984,66 @@
             }
         }
 
+        /* === Additional mobile optimizations === */
+        @media (max-width: 480px) {
+            /* Smaller buttons on very small screens */
+            #settings-button {
+                width: 34px;
+                height: 34px;
+            }
+            
+            #settings-button svg {
+                width: 18px;
+                height: 18px;
+            }
+            
+            #mic-button, #stop-button, #send-button {
+                width: 38px;
+                height: 38px;
+            }
+            
+            #mic-button svg, #stop-button svg {
+                width: 16px;
+                height: 16px;
+            }
+            
+            #send-button svg {
+                width: 18px;
+                height: 18px;
+            }
+            
+            /* Smaller gap between buttons to save space */
+            #input-container {
+                gap: 6px;
+            }
+            
+            /* Ensure input doesn't get pushed out of view */
+            #user-input {
+                font-size: 15px;
+            }
+            
+            /* Make messages wider */
+            .message {
+                max-width: 90%;
+            }
+        }
+
+        /* === Fix for mobile keyboard appearance === */
+        @media (max-height: 600px) {
+            #chat-container {
+                padding-bottom: 5px;
+            }
+            
+            #input-container {
+                padding: 3px 5px;
+                margin-bottom: 5px;
+            }
+            
+            #status-bar {
+                margin-bottom: 5px;
+            }
+        }
+
         /* === Transition Indicator === */
         .tech-transfer-indicator {
             margin-top: 10px;
@@ -1004,6 +1068,79 @@
             0% { opacity: 0.7; }
             50% { opacity: 1; }
             100% { opacity: 0.7; }
+        }
+
+        /* === iOS specific fixes === */
+        @supports (-webkit-touch-callout: none) {
+            /* iOS-specific padding to handle the notch/home indicator */
+            body {
+                padding: env(safe-area-inset-top) env(safe-area-inset-right) 
+                       env(safe-area-inset-bottom) env(safe-area-inset-left);
+            }
+            
+            /* Fix for iOS keyboard pushing content up */
+            #input-container {
+                position: sticky;
+                bottom: 0;
+                z-index: 11;
+            }
+            
+            /* Fix iOS Safari 100vh issue */
+            #chat-container, 
+            #visualization-container,
+            #welcome-splash,
+            #settings-panel,
+            #settings-backdrop {
+                height: 100%; /* Use % instead of vh for iOS */
+            }
+            
+            /* Fix for iOS input padding */
+            input, textarea, select, button {
+                padding-left: max(8px, env(safe-area-inset-left));
+                padding-right: max(8px, env(safe-area-inset-right));
+            }
+        }
+
+        /* === Very small mobile devices === */
+        @media (max-width: 360px) {
+            /* Extra small buttons for very small screens */
+            #settings-button, #mic-button, #stop-button, #send-button {
+                width: 36px; 
+                height: 36px;
+                min-width: 36px; /* Force minimum size */
+                min-height: 36px;
+            }
+            
+            /* Smaller SVG icons */
+            #settings-button svg, 
+            #mic-button svg, 
+            #stop-button svg {
+                width: 16px;
+                height: 16px;
+            }
+            
+            #send-button svg {
+                width: 17px;
+                height: 17px;
+            }
+            
+            /* Minimum gap */
+            #input-container {
+                gap: 4px;
+                padding: 4px 5px;
+            }
+            
+            /* Smaller font and padding for input */
+            #user-input {
+                padding: 5px 6px;
+                min-height: 34px;
+            }
+            
+            /* Make status bar more compact */
+            #status-bar {
+                padding: 4px 8px;
+                font-size: 12px;
+            }
         }
     </style>
 
@@ -1355,6 +1492,7 @@
 
     <!-- Main Application Logic Script (Loads as Module) -->
     <!-- This script will import the animation module -->
+    <script type="module" src="AgentAPI-rules.js"></script>
     <script type="module" src="agent01-logic.js"></script>
 
     <!-- Before closing body tag, add this script for mobile input handling -->
@@ -1363,6 +1501,7 @@
         document.addEventListener('DOMContentLoaded', function() {
             const userInput = document.getElementById('user-input');
             const chatContainer = document.getElementById('chat-container');
+            const chatMessages = document.getElementById('chat-messages');
             
             if (userInput && chatContainer) {
                 // On mobile, when input gets focus, scroll to keep it in view
@@ -1382,13 +1521,92 @@
                         // Keep input visible when keyboard is shown
                         setTimeout(() => {
                             window.scrollTo(0, document.body.scrollHeight);
+                            // Also scroll the chat messages to bottom
+                            if (chatMessages) {
+                                chatMessages.scrollTop = chatMessages.scrollHeight;
+                            }
                         }, 100);
                     }
                     viewportHeight = window.innerHeight;
                 });
+                
+                // Detect orientation change specifically
+                window.addEventListener('orientationchange', function() {
+                    // Wait for orientation change to complete
+                    setTimeout(() => {
+                        // Scroll to ensure input is visible
+                        window.scrollTo(0, document.body.scrollHeight);
+                        if (chatMessages) {
+                            chatMessages.scrollTop = chatMessages.scrollHeight;
+                        }
+                    }, 300);
+                });
             }
+            
+            // Add touch-specific improvements to buttons
+            const allButtons = document.querySelectorAll('#send-button, #mic-button, #stop-button, #settings-button');
+            allButtons.forEach(button => {
+                // Add slightly more padding for touch targets
+                button.addEventListener('touchstart', function() {
+                    // Add a touch-active class that we'll style
+                    this.classList.add('touch-active');
+                }, { passive: true }); // Add passive flag for better scrolling performance
+                
+                button.addEventListener('touchend', function() {
+                    // Remove the touch-active class
+                    this.classList.remove('touch-active');
+                }, { passive: true }); // Add passive flag for better scrolling performance
+            });
         });
     </script>
+
+    <!-- Add touch-specific styles for better tap experience -->
+    <style>
+        /* === Touch device optimizations === */
+        @media (pointer: coarse) {
+            /* All interactive elements should have min 44px touch target size */
+            #settings-button, #mic-button, #stop-button, #send-button {
+                min-width: 44px;
+                min-height: 44px;
+            }
+            
+            /* Prevent unwanted selection on touch */
+            #chat-messages, #status-bar, .message-content, .message-actions button {
+                -webkit-tap-highlight-color: transparent;
+            }
+            
+            /* Improved feedback for touch buttons */
+            .touch-active {
+                transform: scale(0.95) !important;
+                opacity: 0.9;
+                transition: transform 0.1s ease-out, opacity 0.1s ease-out !important;
+            }
+            
+            /* Fix for double tap issues - prevent zoom and fix touch targets */
+            input, button, a {
+                touch-action: manipulation;
+            }
+        }
+        
+        /* Fix for iOS input cursor positioning */
+        input[type="text"] {
+            -webkit-appearance: none;
+            -moz-appearance: none;
+            appearance: none;
+        }
+        
+        /* Fix for iOS rubber-banding */
+        body {
+            position: fixed;
+            width: 100%;
+            height: 100%;
+            overflow: hidden;
+        }
+        
+        #chat-messages {
+            -webkit-overflow-scrolling: touch;
+        }
+    </style>
 
 </body>
 </html>

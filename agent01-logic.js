@@ -7,6 +7,20 @@
 // Import the animation module
 import { Animation } from './agent01-animation.js';
 
+// Import API rules and configuration
+import { 
+    API_CONFIG, 
+    PROMPT_CONFIG, 
+    API_RULES,
+    loadRoutingPrompt,
+    loadTechnicalPrompt,
+    formatRoutingMessages,
+    formatTechnicalMessages,
+    parseRoutingResponse,
+    callLlmApi,
+    calculateTokenCount
+} from './AgentAPI-rules.js';
+
 // =========================================================
 // CONFIGURATION (Exported for Animation Module)
 // =========================================================
@@ -51,29 +65,15 @@ export const CONFIG = {
         standbyEnterDuration: 2000,  // ms
     },
 
-    // API Settings
-    api: {
-        baseUrl: "https://api.deepseek.com/v1/chat/completions",
-        defaultApiKey: "sk-91906d08d98143fd99a45eef802fb2e5",
-        defaultModel: "deepseek-reasoner",
-        models: {
-            "deepseek-reasoner": {
-                id: "deepseek-chat",
-                modelName: "deepseek-reasoner"
-            },
-            "deepseek-chat": {
-                id: "deepseek-chat",
-                modelName: "deepseek-chat"
-            }
-        }
-    },
+    // API Settings (Reference from API_CONFIG)
+    api: API_CONFIG,
 
     // AI Settings
     ai: {
-        temperature: 0.7,
-        maxTokens: 2000,
-        topP: 1.0,
-        promptFile: "../AgentTechs/RoutingAgent.txt",
+        temperature: API_CONFIG.defaultParameters.temperature,
+        maxTokens: API_CONFIG.defaultParameters.maxTokens,
+        topP: API_CONFIG.defaultParameters.topP,
+        promptFile: PROMPT_CONFIG.routingPromptFile,
         defaultPrompt: "" // Empty - we'll use AppState.routingPrompt instead
     },
 
@@ -87,13 +87,8 @@ export const CONFIG = {
 
     // Storage Keys
     storage: {
-        prefix: 'agent01_',
-        keys: {
-            apiKey: 'api_key',
-            settings: 'settings',
-            history: 'chat_history',
-            model: 'selected_model'
-        }
+        prefix: API_CONFIG.storageKeys.prefix,
+        keys: API_CONFIG.storageKeys
     },
 
     // Speech Settings
@@ -213,76 +208,36 @@ export const DOM = {
  * Initialize the app
  */
 async function initializeApp() {
-    // First, detect mobile devices for appropriate handling
-    AppState.isMobile = window.innerWidth < 768;
-    
-    // Initialize UI components
-    UI.updateSettingsUI();
-    
-    // Initialize Config with appropriate defaults
-    // Adjust settings for mobile if needed
-    if (AppState.isMobile) {
-        // Reduce particle count on mobile for better performance
-        CONFIG.particles.count = Math.min(CONFIG.particles.count, 20000);
-        // Set smaller initial size for particles on mobile
-        CONFIG.particles.size = 0.018;
-    }
-    
-    // Load previous settings
-    loadSettings();
-    loadChatHistory();
-    loadSelectedModel();
-    
-    // Set up event listeners
-    setupEventListeners();
-    
-    // Initialize visualization
-    if (!AppState.isMobile) {
-        // On desktop, initialize animation immediately
-        initializeAnimation();
-    } else {
-        // On mobile, delay animation initialization for better initial load
-        setTimeout(initializeAnimation, 500);
-    }
-    
-    // Initialize speech recognition and TTS
-    initializeSpeechRecognition();
-    initializeTextToSpeech();
-    
-    // Load the routing prompt
-    await loadRoutingPrompt();
-    
-    // Set status to ready
-    updateStatusBar("Ready");
-    
-    console.log("App initialized");
-}
-
-/**
- * Load routing prompt from file
- */
-async function loadRoutingPrompt() {
-    // CORRECTED PATH for web deployment (relative to Agent01.html)
-    const promptFile = 'AgentTechs/RoutingAgent.txt';
-    console.log(`Attempting to load routing prompt from: ${promptFile}`); // Log the path being used
-
     try {
-        // Use fetch as it works in the browser
-        const response = await fetch(promptFile);
-        if (!response.ok) {
-            // Log detailed error if fetch fails
-            throw new Error(`Failed to load routing prompt: ${response.status} ${response.statusText} (URL: ${response.url})`);
-        }
-        AppState.routingPrompt = await response.text(); // Store in AppState
-        console.log("Routing prompt loaded successfully into AppState via fetch.");
-        return true;
+        console.log("Initializing Agent 01 Application...");
+        
+        // --- Initialize API Key and Settings ---
+        loadSettings();
+        loadChatHistory();
+        loadSelectedModel();
+        
+        // --- Detect Mobile Devices ---
+        detectMobileDevice();
+        
+        // --- Load Initial Prompt ---
+        console.log("Loading routing prompt...");
+        AppState.routingPrompt = await loadRoutingPrompt();
+        console.log("Routing prompt loaded:", AppState.routingPrompt ? "Success" : "Failed");
+        
+        // --- Setup Event Listeners and UI ---
+        setupEventListeners();
+        initializeAnimation();
+        initializeSpeechRecognition();
+        initializeTextToSpeech();
+        initializeVoices();
+        
+        // Update token count
+        updateTokenCount();
+        
+        console.log("Application initialized successfully!");
     } catch (error) {
-        // Log the error and use a basic fallback
-        console.error("Error loading routing prompt via fetch:", error);
-        AppState.routingPrompt = "System: You are a helpful routing assistant. Error loading specific instructions."; // Basic fallback
-        // Display an error to the user in the UI if possible, or just log it
-        // For simplicity here, we just log and use fallback.
-        return false;
+        console.error("Error initializing application:", error);
+        updateStatusBar("Error initializing: " + error.message);
     }
 }
 
@@ -604,7 +559,7 @@ const UI = {
     },
 
     updateTokenCount: function() {
-        const count = calculateTokenCount();
+        const count = getTokenCount();
         DOM.tokenCount.textContent = `Tokens: ${count}`;
     },
 
@@ -623,171 +578,15 @@ const UI = {
 /**
  * Call LLM API
  */
-async function callLlmApi(messages) {
-    if (!messages || !messages.length) {
-        throw new Error("No messages to send to API");
-    }
-    
-    // Log full message sequence for debugging
-    console.log("API call - Full messages:", messages);
-    
-    // Get model-specific endpoint
-    let endpoint, headers, body;
-    
-    // Create new abort controller for this request
-    AppState.abortController = new AbortController();
-    const signal = AppState.abortController.signal;
-    
-    // Configure model-specific settings
-    if (AppState.selectedModel.startsWith('deepseek')) {
-        endpoint = CONFIG.api.baseUrl;
-        headers = { 'Content-Type': 'application/json', 'Authorization': `Bearer ${AppState.apiKey}` };
-        
-        // Check if the last message is from assistant - in that case use prefix mode
-        const needsPrefixMode = messages.length > 0 && messages[messages.length - 1].role === 'assistant';
-        
-        // Verify that the first non-system message is from a user
-        let foundNonSystemMessage = false;
-        for (let i = 0; i < messages.length; i++) {
-            if (messages[i].role !== 'system') {
-                foundNonSystemMessage = true;
-                if (messages[i].role !== 'user') {
-                    console.error("Error: First non-system message must be from user");
-                    throw new Error("First non-system message must be from user. This is required by the DeepSeek API.");
-                }
-                break;
-            }
-        }
-        
-        body = JSON.stringify({
-            model: CONFIG.api.models[AppState.selectedModel]?.modelName || AppState.selectedModel,
-            messages: messages,
-            temperature: AppState.settings.temperature,
-            max_tokens: AppState.settings.maxTokens,
-            top_p: AppState.settings.topP,
-            stream: true,
-            // Enable prefix completion mode if the last message is from assistant
-            prefix_mode: needsPrefixMode
-        });
-        
-        console.log("Using prefix mode:", needsPrefixMode);
-    } else {
-        throw new Error(`Unsupported model: ${AppState.selectedModel}`);
-    }
-    
-    // Make API request with streaming
-    try {
-        console.log("Sending API request to:", endpoint);
-        const response = await fetch(endpoint, {
-            method: 'POST',
-            headers: headers,
-            body: body,
-            signal: signal
-        });
-
-        if (!response.ok) {
-            let errorMessage = `API error ${response.status}`;
-            try {
-                const errorData = await response.json();
-                console.error("API error details:", errorData);
-                if (errorData.error && typeof errorData.error === 'object') {
-                    errorMessage = `API error: ${errorData.error.message || JSON.stringify(errorData.error)}`;
-                } else if (errorData.error) {
-                    errorMessage = `API error: ${errorData.error}`;
-                } else {
-                    errorMessage = `API error ${response.status}: ${JSON.stringify(errorData)}`;
-                }
-            } catch (e) {
-                console.error("Could not parse error response:", e);
-                errorMessage = `API error ${response.status}: Could not parse error details`;
-            }
-            throw new Error(errorMessage);
-        }
-
-        if (!response.body) {
-            throw new Error("Response body is null (streaming not supported)");
-        }
-
-        const reader = response.body.getReader();
-        let fullText = '';
-        let tempBuffer = '';
-        let streamStarted = false;
-
-        try {
-            console.log("Starting to read streaming response...");
-            while (true) {
-                const { done, value } = await reader.read();
-
-                if (done) {
-                    console.log("Stream completed");
-                    break;
-                }
-
-                // Handle chunk
-                const chunk = new TextDecoder().decode(value);
-                tempBuffer += chunk;
-
-                let lines = tempBuffer.split('\n');
-                tempBuffer = lines.pop() || ''; // Keep incomplete line in buffer
-
-                for (const line of lines) {
-                    if (line.startsWith('data: ')) {
-                        const eventData = line.slice(6); // Remove "data: "
-                        
-                        if (eventData === '[DONE]') {
-                            console.log("Received [DONE] event");
-                            continue;
-                        }
-
-                        try {
-                            const event = JSON.parse(eventData);
-                            
-                            if (event.choices && event.choices[0]) {
-                                if (!streamStarted) {
-                                    console.log("First content received");
-                                    streamStarted = true;
-                                }
-                                const delta = event.choices[0].delta?.content || '';
-                                if (delta) {
-                                    fullText += delta;
-                                    updateCurrentMessage(fullText);
-                                }
-                            }
-                        } catch (jsonError) {
-                            console.warn("Error parsing stream event:", jsonError, eventData);
-                        }
-                    }
-                }
-            }
-        } catch (readError) {
-            console.error("Error reading stream:", readError);
-            if (signal.aborted) {
-                console.log("Stream was deliberately aborted");
-                fullText += "\n*(Generation stopped)*";
-                return fullText;
-            }
-            throw readError;
-        }
-
-        console.log("Streaming completed successfully, returning full text");
-        return fullText;
-    } catch (error) {
-        console.error("Error in API call:", error);
-        if (signal.aborted) {
-            return "*(Generation stopped)*";
-        }
-        throw error;
-    }
-}
-
-/**
- * Update the current streaming message
- */
 function updateCurrentMessage(text) {
     if (AppState.currentMessage) {
+        AppState.currentMessage.content = text;
         UI.updateAIMessage(AppState.currentMessage.id, text);
     }
 }
+
+// Expose updateCurrentMessage globally for the API module to use
+window.updateCurrentMessage = updateCurrentMessage;
 
 // =========================================================
 // SPEECH MODULE
@@ -1321,49 +1120,10 @@ function updateStatusBar(message = null) { UI.updateStatusBar(message); }
 function updateTokenCount() { UI.updateTokenCount(); }
 
 /**
- * Calculate token count for history
+ * Get token count for the current conversation
  */
-function calculateTokenCount() {
-    if (typeof tokenizer !== 'undefined' && typeof tokenizer.encode === 'function') {
-        try {
-            // Create a temporary messages array similar to what we'd send to API
-            const messages = [];
-            
-            // Add system message (routing prompt) if available
-            if (AppState.routingPrompt) {
-                messages.push({ role: 'system', content: AppState.routingPrompt });
-            }
-            
-            // Add chat history
-            AppState.chatHistory.forEach(m => {
-                if ((m.role === 'user' || m.role === 'assistant') && !m.isError) {
-                    messages.push({ role: m.role, content: m.content });
-                }
-            });
-            
-            if (!messages.length) return 0;
-            
-            let count = 0;
-            messages.forEach(m => { 
-                count += tokenizer.encode(m.role).length + tokenizer.encode(m.content).length + 4; 
-            });
-            return count;
-        } catch (error) { 
-            console.warn("Tokenizer error:", error); 
-        }
-    }
-    
-    // Fallback using word count estimation
-    let words = 0;
-    if (AppState.routingPrompt) words += (AppState.routingPrompt.match(/\S+/g) || []).length;
-    
-    AppState.chatHistory.forEach(m => {
-        if ((m.role === 'user' || m.role === 'assistant') && !m.isError) {
-            words += (m.content.match(/\S+/g) || []).length;
-        }
-    });
-    
-    return Math.round(words * 1.3); // Rough approximation of tokens from words
+function getTokenCount() {
+    return calculateTokenCount(AppState.routingPrompt, AppState.chatHistory);
 }
 
 function initializeAnimation() {
@@ -1393,8 +1153,14 @@ function createRipple(event) {
 }
 
 function addRippleEffectListeners() {
-    document.querySelectorAll('#send-button, #mic-button, #stop-button, #settings-button, #welcome-button, .settings-button')
-        .forEach(button => button.addEventListener('mousedown', createRipple));
+    // Select all buttons that should have ripple effect
+    const buttons = document.querySelectorAll('#send-button, #mic-button, #stop-button, #settings-button, #welcome-button, .settings-button');
+    
+    // Add mousedown event for desktop
+    buttons.forEach(button => button.addEventListener('mousedown', createRipple));
+    
+    // Add touchstart event for mobile with passive flag to improve scrolling performance
+    buttons.forEach(button => button.addEventListener('touchstart', createRipple, { passive: true }));
 }
 
 function visualFeedback(element, text, title, isCodeButton = false) {
@@ -1422,35 +1188,6 @@ function visualFeedback(element, text, title, isCodeButton = false) {
 }
 
 /**
- * Load technical prompt for a specific technology
- */
-async function loadTechnicalPrompt(technologyName) {
-    if (!technologyName) {
-        console.error("Cannot load technical prompt without technology name.");
-        return null; // Return null or a default error prompt
-    }
-
-    // CORRECTED PATH for web deployment (relative to Agent01.html)
-    const promptPath = `AgentTechs/${technologyName}.txt`;
-    console.log(`Attempting to load technical prompt from: ${promptPath}`); // Log the path
-
-    try {
-        const response = await fetch(promptPath);
-        if (!response.ok) {
-            // Throw an error with details if the specific tech file isn't found or fetch fails
-            throw new Error(`Failed to load technical prompt '${promptPath}': ${response.status} ${response.statusText} (URL: ${response.url})`);
-        }
-        const promptText = await response.text();
-        console.log(`Technical prompt for ${technologyName} loaded successfully via fetch.`);
-        return promptText; // Return the loaded prompt text
-    } catch (error) {
-        console.error("Error loading technical prompt:", error);
-        // Return a generic error prompt indicating the specific file failed
-        return `System: Error loading specific instructions for ${technologyName}. Provide general troubleshooting steps based on the technology name only.`;
-    }
-}
-
-/**
  * Execute the routing phase of the conversation
  */
 async function executeRoutingPhase() {
@@ -1461,12 +1198,29 @@ async function executeRoutingPhase() {
     AppState.conversationPhase = 'routing'; // Explicitly set phase
 
     try {
-        const messages = formatRoutingMessages(); // Use specific formatter
+        // Create new abort controller for this request
+        AppState.abortController = new AbortController();
+        
+        // Use imported function to format messages for routing
+        const messages = formatRoutingMessages(
+            AppState.routingPrompt, 
+            AppState.chatHistory, 
+            AppState.currentMessage,
+            AppState.originalUserQuery
+        );
+        
         if (!messages) throw new Error("Failed to format messages for routing.");
 
-        const response = await callLlmApi(messages); // Call API
+        // Call API using imported function
+        const response = await callLlmApi(
+            messages, 
+            AppState.apiKey, 
+            AppState.selectedModel, 
+            AppState.settings, 
+            AppState.abortController
+        );
 
-        // --- Crucial Step: Parse the response ---
+        // Use imported function to parse the response
         const { isTechIdentified, technologyName, explanation } = parseRoutingResponse(response);
 
         if (isTechIdentified && technologyName) {
@@ -1519,40 +1273,6 @@ async function executeRoutingPhase() {
 }
 
 /**
- * Parse the response from the routing agent
- */
-function parseRoutingResponse(responseText) {
-    // Expecting format like "[TECH_IDENTIFIED: ExchangeOnline] Transferring you to the Exchange specialist..."
-    // Or "[SCOPING_QUESTION] Could you please specify..."
-
-    const techMatch = responseText.match(/^\[TECH_IDENTIFIED:\s*([^\]]+)\]\s*(.*)/s);
-    if (techMatch) {
-        return {
-            isTechIdentified: true,
-            technologyName: techMatch[1].trim(),
-            explanation: techMatch[2].trim() || `Identified technology: ${techMatch[1].trim()}. Preparing detailed information...` // Fallback explanation
-        };
-    }
-
-    // Check for scoping question if prompt uses a specific format for it
-    const scopeMatch = responseText.match(/^\[SCOPING_QUESTION\]\s*(.*)/s);
-    if (scopeMatch) {
-        return {
-            isTechIdentified: false,
-            technologyName: null,
-            explanation: scopeMatch[1].trim() // Extract just the question part
-        };
-    }
-
-    // Default: Assume it's a simple response or scoping question without specific tag
-    return {
-        isTechIdentified: false,
-        technologyName: null,
-        explanation: responseText // The whole text is the explanation/question
-    };
-}
-
-/**
  * Execute the technical phase of the conversation
  */
 async function executeTechnicalPhase() {
@@ -1572,54 +1292,42 @@ async function executeTechnicalPhase() {
 
     try {
         console.log(`Loading technical prompt for ${AppState.identifiedTechnology}...`);
+        // Use imported function to load technical prompt
         const technicalPrompt = await loadTechnicalPrompt(AppState.identifiedTechnology);
         if (!technicalPrompt) {
             throw new Error(`Could not load instructions for ${AppState.identifiedTechnology}.`);
         }
         console.log(`Technical prompt loaded successfully`);
 
-        // Create a simple two-message sequence: system prompt + user query
-        // This ensures we always satisfy the DeepSeek API requirement
-        const simplifiedMessages = [
-            { role: 'system', content: technicalPrompt },
-            { role: 'user', content: AppState.originalUserQuery }
-        ];
-
-        // Add context about previous interactions if this is a follow-up question
-        if (AppState.chatHistory.some(m => m.role === 'assistant' && 
-                                        !m.isGreeting && 
-                                        !m.isError && 
-                                        m.id !== AppState.currentMessage.id)) {
-            // Get only the most recent exchange between user and specialist
-            // Summarize previous exchanges to keep context compact
-            let contextSummary = "Previous conversation context:\n";
-            
-            // Find all assistant messages after the routing phase
-            const specialistMessages = AppState.chatHistory.filter(m => 
-                m.role === 'assistant' && 
-                !m.isGreeting && 
-                !m.isError && 
-                m.id !== AppState.currentMessage.id);
-            
-            if (specialistMessages.length > 0) {
-                // Add the most recent specialist message as context
-                const lastSpecialistMessage = specialistMessages[specialistMessages.length - 1];
-                contextSummary += `Last specialist response: ${lastSpecialistMessage.content}\n\n`;
-                
-                // Update the user query with context
-                simplifiedMessages[1].content = 
-                    `Follow-up question for ${AppState.identifiedTechnology} specialist. Previous specialist advice was provided.\n\nMy question: ${AppState.originalUserQuery}`;
-            }
-            
-            // Enrich the system prompt with the context summary
-            simplifiedMessages[0].content += `\n\n${contextSummary}`;
+        // Create new abort controller for this request
+        AppState.abortController = new AbortController();
+        
+        // Use imported function to format messages for technical phase
+        const messages = formatTechnicalMessages(
+            technicalPrompt,
+            AppState.originalUserQuery,
+            AppState.routingAgentOutputText,
+            AppState.chatHistory,
+            AppState.currentMessage,
+            AppState.identifiedTechnology
+        );
+        
+        if (!messages) {
+            throw new Error("Failed to format messages for technical phase.");
         }
 
-        console.log("Simplified Technical Messages:", simplifiedMessages);
-        console.log("Calling API with technical messages...");
+        console.log("Technical Messages Ready:", messages.length, "messages");
         
         try {
-            response = await callLlmApi(simplifiedMessages); // Call API with simplified messages
+            // Use imported function to call API
+            response = await callLlmApi(
+                messages, 
+                AppState.apiKey, 
+                AppState.selectedModel, 
+                AppState.settings,
+                AppState.abortController
+            );
+            
             console.log("API response received successfully");
             
             if (!response || response.trim() === '') {
@@ -1670,187 +1378,6 @@ async function executeTechnicalPhase() {
 }
 
 /**
- * Format messages for the routing agent
- */
-function formatRoutingMessages() {
-    try {
-        const messages = [];
-        
-        // Add system message (routing prompt)
-        if (AppState.routingPrompt) {
-            messages.push({ role: 'system', content: AppState.routingPrompt });
-        } else {
-            console.warn("Routing prompt not loaded!");
-            messages.push({ role: 'system', content: "You are a helpful routing assistant." });
-        }
-
-        // Find user messages in chat history
-        const userMessages = AppState.chatHistory.filter(message => 
-            message.role === 'user' && 
-            (!AppState.currentMessage || message.id !== AppState.currentMessage.id)
-        );
-        
-        // If there are no user messages, use originalUserQuery
-        if (userMessages.length === 0) {
-            if (AppState.originalUserQuery) {
-                messages.push({ role: 'user', content: AppState.originalUserQuery });
-            } else {
-                console.error("No user messages found for API request!");
-                return null;
-            }
-            return messages; // Early return with just system + user
-        } 
-        
-        // Add relevant conversation history
-        let assistantResponded = false;
-        let lastUserMessageIndex = -1;
-        
-        for (let i = 0; i < AppState.chatHistory.length; i++) {
-            const message = AppState.chatHistory[i];
-            
-            // Skip current placeholder, greetings and errors
-            if ((AppState.currentMessage && message.id === AppState.currentMessage.id) || 
-                message.isGreeting || 
-                message.isError) {
-                continue;
-            }
-            
-            if (message.role === 'user') {
-                lastUserMessageIndex = messages.length;
-                messages.push({ role: 'user', content: message.content });
-            } else if (message.role === 'assistant') {
-                messages.push({ role: 'assistant', content: message.content });
-                assistantResponded = true;
-            }
-        }
-        
-        // If the last message is not a user message, remove the last assistant message
-        // and ensure last user message is included
-        if (assistantResponded && messages.length > 0 && messages[messages.length - 1].role === 'assistant') {
-            // Remove the last assistant message to ensure last message is from user
-            messages.pop();
-            
-            // If we have no messages or no user message, add the most recent user message
-            if (messages.length === 0 || !messages.some(m => m.role === 'user')) {
-                const lastUserMessage = userMessages[userMessages.length - 1];
-                messages.push({ role: 'user', content: lastUserMessage.content });
-            }
-        }
-
-        console.log("Formatted Routing Messages:", messages); // Debug log
-        return messages;
-    } catch (error) {
-        console.error("Error formatting routing messages:", error);
-        return null;
-    }
-}
-
-/**
- * Format messages for the technical agent
- */
-function formatTechnicalMessages(technicalPrompt, originalQuery, routingContext) {
-    try {
-        const messages = [];
-        
-        // Add system message (technical prompt) with routing context included
-        if (technicalPrompt) {
-            let systemContent = technicalPrompt;
-            
-            // Add routing context to the system message if available
-            if (routingContext) {
-                systemContent += `\n\nContext from routing agent: ${routingContext}`;
-            }
-            
-            messages.push({ role: 'system', content: systemContent });
-        } else {
-            console.warn("Technical prompt is missing!");
-            messages.push({ role: 'system', content: "Provide detailed technical steps." });
-        }
-
-        // Find the conversation history with this technology specialist
-        let relevantHistory = [];
-        
-        // Get messages after we identified the technology
-        let foundTechStart = false;
-        let lastMessageWasFromUser = false;
-        
-        // 1. Look for the routing message that identified the technology
-        for (let i = 0; i < AppState.chatHistory.length; i++) {
-            const message = AppState.chatHistory[i];
-            
-            // Skip system messages, current placeholder, greetings and errors
-            if (message.role === 'system' || 
-                (AppState.currentMessage && message.id === AppState.currentMessage.id) || 
-                message.isGreeting || 
-                message.isError) {
-                continue;
-            }
-            
-            // First look for the routing message that identified the technology
-            if (!foundTechStart && message.role === 'assistant' && 
-                message.content.includes(`[TECH_IDENTIFIED: ${AppState.identifiedTechnology}]`)) {
-                foundTechStart = true;
-                continue; // Skip the routing message itself
-            }
-            
-            // Once we've found the tech start, include all subsequent messages
-            if (foundTechStart) {
-                relevantHistory.push({ role: message.role, content: message.content });
-                lastMessageWasFromUser = message.role === 'user';
-            }
-        }
-        
-        // If we have history, process it to ensure proper alternation
-        let processedHistory = [];
-        if (relevantHistory.length > 0) {
-            let lastRole = null;
-            
-            for (const msg of relevantHistory) {
-                // Skip consecutive messages with the same role
-                if (lastRole !== msg.role) {
-                    processedHistory.push(msg);
-                    lastRole = msg.role;
-                }
-            }
-        }
-        
-        // Add conversation history before adding the current query
-        // but only if it ends with an assistant message
-        if (processedHistory.length > 0) {
-            if (processedHistory[processedHistory.length - 1].role === 'assistant') {
-                messages.push(...processedHistory);
-                lastMessageWasFromUser = false;
-            } else {
-                // If history ends with user, only include up to the last assistant message
-                let trimmedHistory = [];
-                for (let i = 0; i < processedHistory.length - 1; i++) {
-                    trimmedHistory.push(processedHistory[i]);
-                }
-                if (trimmedHistory.length > 0) {
-                    messages.push(...trimmedHistory);
-                    lastMessageWasFromUser = false;
-                }
-            }
-        }
-        
-        // Finally, add the current user query
-        if (originalQuery) {
-            messages.push({ role: 'user', content: originalQuery });
-        } else {
-            console.error("Original user query is missing for technical formatting!");
-            return null; // Cannot proceed without the query
-        }
-
-        // Log the final formatted messages for debugging
-        console.log("Formatted Technical Messages:", messages.map(m => `${m.role}: ${m.content.substring(0, 30)}...`));
-        return messages;
-    } catch (error) {
-        console.error("Error formatting technical messages:", error);
-        return null;
-    }
-}
-
-/**
  * Handle resetting settings to defaults
  */
 function handleResetSettings() {
@@ -1896,4 +1423,49 @@ function initializeVoices() {
     
     // Try immediate load for browsers that load voices synchronously
     loadVoicesWhenAvailable();
+}
+
+// --- Detect Mobile Device ---
+function detectMobileDevice() {
+    // Check if device is mobile based on user agent
+    const userAgent = navigator.userAgent || navigator.vendor || window.opera;
+    const isMobileByUA = /android|webos|iphone|ipad|ipod|blackberry|iemobile|opera mini/i.test(userAgent.toLowerCase());
+    
+    // Also check by screen size
+    const isMobileBySize = window.innerWidth <= 768;
+    
+    // Set mobile state
+    AppState.isMobile = isMobileByUA || isMobileBySize;
+    
+    // Add class to body for CSS targeting
+    if (AppState.isMobile) {
+        document.body.classList.add('mobile-device');
+        
+        // Adjust UI for mobile
+        adjustUIForMobile();
+    }
+    
+    console.log("Device detection:", AppState.isMobile ? "Mobile" : "Desktop");
+}
+
+// --- Adjust UI for Mobile ---
+function adjustUIForMobile() {
+    if (!AppState.isMobile) return;
+    
+    // Focus handling improvements for mobile
+    if (DOM.userInput) {
+        // Prevent auto-zoom on input focus for iOS
+        DOM.userInput.style.fontSize = '16px';
+        
+        // Improve scroll behavior when virtual keyboard appears
+        DOM.userInput.addEventListener('focus', () => {
+            // Small delay to let virtual keyboard appear
+            setTimeout(() => {
+                window.scrollTo(0, document.body.scrollHeight);
+                if (DOM.chatMessages) {
+                    DOM.chatMessages.scrollTop = DOM.chatMessages.scrollHeight;
+                }
+            }, 300);
+        }, { passive: true }); // Add passive flag to improve scrolling performance
+    }
 }
