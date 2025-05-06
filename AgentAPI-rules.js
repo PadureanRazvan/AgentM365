@@ -330,12 +330,25 @@ export function parseRoutingResponse(responseText) {
     // Expecting format like "[TECH_IDENTIFIED: ExchangeOnline] Transferring you to the Exchange specialist..."
     // Or "[SCOPING_QUESTION] Could you please specify..."
 
+    if (!responseText) {
+        return {
+            isTechIdentified: false,
+            technologyName: null,
+            cleanExplanation: "Error: Empty response received.",
+            isScopingQuestion: false
+        };
+    }
+
     const techMatch = responseText.match(/^\[TECH_IDENTIFIED:\s*([^\]]+)\]\s*(.*)/s);
     if (techMatch) {
+        const techName = techMatch[1].trim();
+        const explanation = techMatch[2].trim() || `Identified technology: ${techName}. Preparing detailed information...`; // Fallback explanation
         return {
             isTechIdentified: true,
-            technologyName: techMatch[1].trim(),
-            explanation: techMatch[2].trim() || `Identified technology: ${techMatch[1].trim()}. Preparing detailed information...` // Fallback explanation
+            technologyName: techName,
+            cleanExplanation: explanation, // Text AFTER the tag
+            explanation: explanation, // Keep for backward compatibility
+            isScopingQuestion: false
         };
     }
 
@@ -345,7 +358,9 @@ export function parseRoutingResponse(responseText) {
         return {
             isTechIdentified: false,
             technologyName: null,
-            explanation: scopeMatch[1].trim() // Extract just the question part
+            cleanExplanation: scopeMatch[1].trim(), // Text AFTER the tag
+            explanation: scopeMatch[1].trim(), // Keep for backward compatibility
+            isScopingQuestion: true
         };
     }
 
@@ -353,7 +368,9 @@ export function parseRoutingResponse(responseText) {
     return {
         isTechIdentified: false,
         technologyName: null,
-        explanation: responseText // The whole text is the explanation/question
+        cleanExplanation: responseText, // The whole text is the explanation/question
+        explanation: responseText, // Keep for backward compatibility
+        isScopingQuestion: false // Assume not a scoping question if tag is missing
     };
 }
 
@@ -409,7 +426,7 @@ export async function processRoutingQuery(
         }
 
         // 2. Call the LLM API
-        const response = await callLlmApi(
+        const rawResponse = await callLlmApi(
             messages, 
             apiKey, 
             selectedModel, 
@@ -418,7 +435,7 @@ export async function processRoutingQuery(
         );
 
         // 3. Parse the response
-        const { isTechIdentified, technologyName, explanation } = parseRoutingResponse(response);
+        const { isTechIdentified, technologyName, cleanExplanation } = parseRoutingResponse(rawResponse);
 
         // 4. Determine the next action based on the parsed response
         if (isTechIdentified && technologyName) {
@@ -427,16 +444,16 @@ export async function processRoutingQuery(
                 status: 'success',
                 action: 'handoff',
                 technology: technologyName,
-                explanation: explanation,
-                rawResponse: response
+                explanation: cleanExplanation, // Use clean explanation for UI
+                rawResponse: rawResponse  // Keep raw response for history
             };
         } else {
             // Scoping question or simple response - ask user for more info
             return {
                 status: 'success',
                 action: 'ask',
-                explanation: explanation,
-                rawResponse: response
+                explanation: cleanExplanation, // Use clean explanation for UI
+                rawResponse: rawResponse  // Keep raw response for history
             };
         }
     } catch (error) {

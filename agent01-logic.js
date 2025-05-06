@@ -184,7 +184,6 @@ export const DOM = {
     settingsPanel: document.getElementById('settings-panel'),
     settingsBackdrop: document.getElementById('settings-backdrop'),
     modelSelector: document.getElementById('model-selector'),
-    apiKeyInput: document.getElementById('api-key-input'),
     temperatureSlider: document.getElementById('temperature-slider'),
     temperatureValue: document.getElementById('temperature-value'),
     maxTokensInput: document.getElementById('max-tokens-input'),
@@ -255,10 +254,15 @@ function loadSettings() {
             console.log("Loaded settings:", AppState.settings);
         } catch (error) { console.error("Error loading settings:", error); }
     }
-    const apiStorageKey = CONFIG.storage.prefix + CONFIG.storage.keys.apiKey;
-    const savedApiKey = localStorage.getItem(apiStorageKey);
-    if (savedApiKey) AppState.apiKey = savedApiKey;
-    else console.log("Using default API key.");
+}
+
+/**
+ * Helper function to remove routing tags from text for display.
+ */
+function cleanRoutingTags(text) {
+    if (typeof text !== 'string') return text;
+    // Remove [TECH_IDENTIFIED:...] and [SCOPING_QUESTION] tags
+    return text.replace(/^\[(?:TECH_IDENTIFIED|SCOPING_QUESTION)[^\]]*\]\s*/, '').trim();
 }
 
 /**
@@ -272,7 +276,13 @@ function loadChatHistory() {
             AppState.chatHistory = JSON.parse(savedHistory);
             AppState.chatHistory.forEach(message => {
                 if (message.role !== 'system') {
-                    UI.addMessageToChat(message.content, message.role, message.id, message.isError);
+                    let displayContent = message.content;
+                    // Clean assistant messages before displaying
+                    if (message.role === 'assistant' && !message.isError) {
+                        displayContent = cleanRoutingTags(message.content);
+                    }
+                    // Add the potentially cleaned message to the chat UI
+                    UI.addMessageToChat(displayContent, message.role, message.id, message.isError);
                 }
             });
             console.log(`Loaded ${AppState.chatHistory.length} messages from history.`);
@@ -308,7 +318,6 @@ function setupEventListeners() {
     DOM.settingsButton.addEventListener('click', toggleSettingsPanel);
     DOM.settingsBackdrop.addEventListener('click', toggleSettingsPanel);
     DOM.modelSelector.addEventListener('change', handleModelChange);
-    DOM.apiKeyInput.addEventListener('change', handleApiKeyChange);
     DOM.temperatureSlider.addEventListener('input', handleTemperatureChange);
     DOM.maxTokensInput.addEventListener('change', handleMaxTokensChange);
     DOM.topPSlider.addEventListener('input', handleTopPChange);
@@ -555,7 +564,6 @@ const UI = {
         DOM.topPValue.textContent = AppState.settings.topP.toFixed(1);
         DOM.ttsEnabledCheckbox.checked = AppState.settings.ttsEnabled;
         DOM.ttsEnabledCheckbox.disabled = !('speechSynthesis' in window);
-        DOM.apiKeyInput.value = AppState.apiKey;
         DOM.modelSelector.value = AppState.selectedModel;
     },
 
@@ -840,11 +848,6 @@ function handleModelChange() {
     updateStatusBar();
 }
 
-function handleApiKeyChange() {
-    AppState.apiKey = DOM.apiKeyInput.value;
-    saveApiKey();
-}
-
 function handleTemperatureChange() {
     AppState.settings.temperature = parseFloat(DOM.temperatureSlider.value);
     DOM.temperatureValue.textContent = AppState.settings.temperature.toFixed(1);
@@ -1102,12 +1105,6 @@ function saveSettings() {
     const key = CONFIG.storage.prefix + CONFIG.storage.keys.settings;
     try { localStorage.setItem(key, JSON.stringify(AppState.settings)); }
     catch (error) { console.error("Error saving settings:", error); }
-}
-
-function saveApiKey() {
-    const key = CONFIG.storage.prefix + CONFIG.storage.keys.apiKey;
-    try { localStorage.setItem(key, AppState.apiKey); }
-    catch (error) { console.error("Error saving API key:", error); }
 }
 
 function saveSelectedModel() {
