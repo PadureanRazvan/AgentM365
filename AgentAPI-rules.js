@@ -299,53 +299,84 @@ export function formatTechnicalMessages(technicalPrompt, originalQuery, routingC
 }
 
 /**
- * Parse the response from the routing agent
+ * Parse the response from the routing agent.
+ * Refined for more robust parsing, especially around the tag and explanation.
  */
 export function parseRoutingResponse(responseText) {
-    // Expecting format like "[TECH_IDENTIFIED: ExchangeOnline] Transferring you to the Exchange specialist..."
-    // Or "[SCOPING_QUESTION] Could you please specify..."
-
-    if (!responseText) {
+    if (typeof responseText !== 'string' || !responseText.trim()) {
+        // console.log("parseRoutingResponse: Empty or non-string input");
         return {
             isTechIdentified: false,
             technologyName: null,
-            cleanExplanation: "Error: Empty response received.",
-            isScopingQuestion: false
+            cleanExplanation: responseText || "Error: Empty response received.", // Return original or error
+            isScopingQuestion: false,
+            parsingAttemptedTag: false
         };
     }
 
-    const techMatch = responseText.match(/^\[TECH_IDENTIFIED:\s*([^\]]+)\]\s*(.*)/s);
-    if (techMatch) {
-        const techName = techMatch[1].trim();
-        const explanation = techMatch[2].trim() || `Identified technology: ${techName}. Preparing detailed information...`; // Fallback explanation
-        return {
-            isTechIdentified: true,
-            technologyName: techName,
-            cleanExplanation: explanation, // Text AFTER the tag
-            explanation: explanation, // Keep for backward compatibility
-            isScopingQuestion: false
-        };
-    }
+    // Work with a version of the responseText that has leading/trailing whitespace removed.
+    const trimmedResponse = responseText.trim();
 
-    // Check for scoping question if prompt uses a specific format for it
-    const scopeMatch = responseText.match(/^\[SCOPING_QUESTION\]\s*(.*)/s);
-    if (scopeMatch) {
+    const techTagPrefix = "[TECH_IDENTIFIED:";
+    const techTagSuffix = "]"; // Expected suffix for the technology name part of the tag
+    
+    const scopeTagExact = "[SCOPING_QUESTION]"; // The exact tag for scoping questions
+
+    if (trimmedResponse.startsWith(techTagPrefix)) {
+        // console.log("parseRoutingResponse: Tech tag prefix detected");
+        const prefixEndIndex = techTagPrefix.length;
+        const suffixStartIndexInTrimmed = trimmedResponse.indexOf(techTagSuffix, prefixEndIndex);
+
+        if (suffixStartIndexInTrimmed > prefixEndIndex) { // Found ']' after "[TECH_IDENTIFIED:"
+            const techNameCandidate = trimmedResponse.substring(prefixEndIndex, suffixStartIndexInTrimmed).trim();
+            // console.log(`parseRoutingResponse: techNameCandidate: '${techNameCandidate}'`);
+
+            if (techNameCandidate) { // Technology name extracted and is not empty
+                const explanation = trimmedResponse.substring(suffixStartIndexInTrimmed + techTagSuffix.length).trim();
+                // console.log(`parseRoutingResponse: Tech identified. Name: '${techNameCandidate}', Explanation: '${explanation.substring(0,50)}...'`);
+                return {
+                    isTechIdentified: true,
+                    technologyName: techNameCandidate,
+                    cleanExplanation: explanation || `Identified technology: ${techNameCandidate}. Preparing detailed information...`,
+                    isScopingQuestion: false,
+                    parsingAttemptedTag: true
+                };
+            } else {
+                // console.log("parseRoutingResponse: techNameCandidate was empty after trim. Malformed tag.");
+            }
+        } else {
+            // console.log("parseRoutingResponse: Tech tag suffix ']' not found correctly after prefix. Malformed tag.");
+        }
+        // If tag is malformed, fall through and return original full responseText
         return {
             isTechIdentified: false,
             technologyName: null,
-            cleanExplanation: scopeMatch[1].trim(), // Text AFTER the tag
-            explanation: scopeMatch[1].trim(), // Keep for backward compatibility
-            isScopingQuestion: true
+            cleanExplanation: responseText, // Use original, untrimmed responseText if parse fails here
+            isScopingQuestion: false,
+            parsingAttemptedTag: true 
+        };
+
+    } else if (trimmedResponse.startsWith(scopeTagExact)) {
+        // console.log("parseRoutingResponse: Scope tag detected");
+        const explanation = trimmedResponse.substring(scopeTagExact.length).trim();
+        // console.log(`parseRoutingResponse: Scoping question. Explanation: '${explanation.substring(0,50)}...'`);
+        return {
+            isTechIdentified: false,
+            technologyName: null,
+            cleanExplanation: explanation || "Please provide more details.",
+            isScopingQuestion: true,
+            parsingAttemptedTag: true
         };
     }
 
-    // Default: Assume it's a simple response or scoping question without specific tag
+    // console.log("parseRoutingResponse: No recognized tag prefix.");
+    // Default: No recognized tag.
     return {
         isTechIdentified: false,
         technologyName: null,
-        cleanExplanation: responseText, // The whole text is the explanation/question
-        explanation: responseText, // Keep for backward compatibility
-        isScopingQuestion: false // Assume not a scoping question if tag is missing
+        cleanExplanation: responseText, // Use original, untrimmed responseText
+        isScopingQuestion: false,
+        parsingAttemptedTag: false
     };
 }
 

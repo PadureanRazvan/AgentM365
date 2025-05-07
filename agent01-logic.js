@@ -113,6 +113,7 @@ export const AppState = {
     currentMessage: null,
     abortController: null,
     lastError: null,
+    isRoutingStream: false, // Add this flag to track routing agent streaming
 
     // --- NEW STATES for Two-Phase Flow ---
     conversationPhase: 'routing', // 'routing' | 'technical_handoff' | 'technical_response'
@@ -261,8 +262,22 @@ function loadSettings() {
  */
 function cleanRoutingTags(text) {
     if (typeof text !== 'string') return text;
-    // Remove [TECH_IDENTIFIED:...] and [SCOPING_QUESTION] tags
-    return text.replace(/^\[(?:TECH_IDENTIFIED|SCOPING_QUESTION)[^\]]*\]\s*/, '').trim();
+    
+    let cleanedText = text;
+
+    // Pattern for [TECH_IDENTIFIED: TechName] potentially followed by explanation
+    const techIdentifiedPattern = /^\[TECH_IDENTIFIED:\s*[^\]]+\]\s*/;
+    
+    // Pattern for [SCOPING_QUESTION] potentially followed by the question
+    const scopingQuestionPattern = /^\[SCOPING_QUESTION\]\s*/;
+
+    if (techIdentifiedPattern.test(cleanedText)) {
+        cleanedText = cleanedText.replace(techIdentifiedPattern, '');
+    } else if (scopingQuestionPattern.test(cleanedText)) {
+        cleanedText = cleanedText.replace(scopingQuestionPattern, '');
+    }
+    
+    return cleanedText.trim();
 }
 
 /**
@@ -356,7 +371,10 @@ const UI = {
         const contentDiv = document.createElement('div');
         contentDiv.className = 'message-content';
 
-        if (role === 'assistant' && !text && !isError) {
+        // Show typing animation for assistant messages that:
+        // 1. Have no text provided, OR
+        // 2. Are in routing phase (special case for placeholder)
+        if (role === 'assistant' && !isError && (!text || AppState.isRoutingStream)) {
             const thinkingDiv = document.createElement('div');
             thinkingDiv.className = 'typing-animation';
             thinkingDiv.innerHTML = `<span class="typing-dot"></span><span class="typing-dot"></span><span class="typing-dot"></span>`;
@@ -406,50 +424,76 @@ const UI = {
     finalizeAIMessage: function(messageId, text, isError = false, showTransition = false, techName = '') {
         const messageElement = document.getElementById(messageId);
         if (!messageElement) return;
+        
         const contentElement = messageElement.querySelector('.message-content');
         if (!contentElement) return;
-        const indicator = contentElement.querySelector('.typing-animation');
-        if (indicator) indicator.remove();
 
-        let cleanText = text.replace(/▌$/, ''); // Remove trailing cursor if present
+        // 1. Clear any previous content thoroughly (including thinking dots)
+        contentElement.innerHTML = ''; 
 
-        // Render the main text first
-        this.renderMarkdown(contentElement, cleanText);
+        // 2. Prepare the main text for display (remove streaming cursor)
+        let cleanTextForDisplay = text ? text.replace(/▌$/, '') : (isError ? "Error occurred." : ""); 
+
+        // 3. Render the main text
+        try {
+            // Render into a temporary div first to avoid side effects
+            const tempDiv = document.createElement('div');
+            this.renderMarkdown(tempDiv, cleanTextForDisplay);
+            // Now transfer the rendered content
+            contentElement.innerHTML = tempDiv.innerHTML;
+        } catch (e) {
+            console.error("Error during renderMarkdown:", e);
+            contentElement.textContent = cleanTextForDisplay; // Fallback
+        }
         
-        // Add Transition Indicator if needed
+        // 4. Add Transition Indicator (if conditions are met)
         if (showTransition && techName && !isError) {
-            // Use the CSS class for transition indicator
-            contentElement.insertAdjacentHTML('beforeend', `
-                <div class="tech-transfer-indicator">
-                    Handing off to ${techName} specialist...
-                </div>
-            `);
+            try {
+                const indicatorHTML = `
+                    <div class="tech-transfer-indicator">
+                        Handing off to ${techName} specialist...
+                    </div>
+                `;
+                
+                // Append the handoff indicator
+                contentElement.insertAdjacentHTML('beforeend', indicatorHTML);
+            } catch (e) {
+                console.error("Error adding tech-transfer-indicator:", e);
+            }
         }
 
         messageElement.classList.toggle('error-message', isError);
 
-        // Update or add message actions (copy, tts, regenerate)
-        let actionsDiv = messageElement.querySelector('.message-actions');
-        if (isError && actionsDiv) {
-            actionsDiv.remove();
-        } else if (!isError && !actionsDiv && messageElement.classList.contains('ai-message')) {
-            // Add actions (Regenerate might need disabling/rethinking for routing messages)
-            actionsDiv = document.createElement('div');
-            actionsDiv.className = 'message-actions';
-            actionsDiv.innerHTML = `
-                <button class="message-action-button copy-button" title="Copy Text">📋</button>
-                <button class="message-action-button tts-button" title="Read Aloud">🔊</button>
-                ${AppState.conversationPhase !== 'technical_handoff' ? '<button class="message-action-button regenerate-button" title="Regenerate Response">🔄</button>' : ''}
-            `; // Conditionally show regenerate
-            messageElement.appendChild(actionsDiv);
-        }
+        // 5. Add message actions (deferred to avoid interference)
+        requestAnimationFrame(() => {
+            let actionsDiv = messageElement.querySelector('.message-actions');
+            if (isError && actionsDiv) {
+                actionsDiv.remove();
+            } else if (!isError && !actionsDiv && messageElement.classList.contains('ai-message')) {
+                actionsDiv = document.createElement('div');
+                actionsDiv.className = 'message-actions';
+                actionsDiv.innerHTML = `
+                    <button class="message-action-button copy-button" title="Copy Text">📋</button>
+                    <button class="message-action-button tts-button" title="Read Aloud">🔊</button>
+                    ${AppState.conversationPhase !== 'technical_handoff' ? '<button class="message-action-button regenerate-button" title="Regenerate Response">🔄</button>' : ''}
+                `;
+                messageElement.appendChild(actionsDiv);
+            }
 
-        this.highlightCode(contentElement);
-        this.scrollToBottom();
+            // 6. Highlight code (also deferred)
+            try {
+                this.highlightCode(contentElement);
+            } catch (e) {
+                console.error("Error during highlightCode:", e);
+            }
 
-        // Speak only the main text, not the transition indicator
-        if (AppState.settings.ttsEnabled && !isError && cleanText) {
-            const textToSpeak = cleanText.trim(); // Just speak the main text
+            // 7. Scroll to bottom
+            this.scrollToBottom();
+        });
+
+        // 8. Speak text
+        if (AppState.settings.ttsEnabled && !isError && cleanTextForDisplay) {
+            const textToSpeak = cleanTextForDisplay.trim();
             speakText(textToSpeak);
         }
     },
@@ -457,6 +501,12 @@ const UI = {
     renderMarkdown: function(element, text) {
         if (!element) return;
         if (text === null || text === undefined) text = '';
+        
+        // First, detect and clean any routing tags from text before markdown
+        if (typeof text === 'string' && text.startsWith('[TECH_IDENTIFIED:')) {
+            text = cleanRoutingTags(text);
+        }
+        
         try {
             const dirtyHtml = marked.parse(text, { breaks: true, gfm: true });
             const cleanHtml = dirtyHtml.replace(/<script[\s\S]*?>[\s\S]*?<\/script>/gi, '');
@@ -589,6 +639,28 @@ const UI = {
  */
 function updateCurrentMessage(text) {
     if (AppState.currentMessage) {
+        // If this is a routing agent stream, don't display raw text with tags
+        if (AppState.isRoutingStream) {
+            // Only update the content property for API context
+            AppState.currentMessage.content = text;
+            
+            // Optionally update with a typing animation if needed
+            const messageElement = document.getElementById(AppState.currentMessage.id);
+            if (messageElement) {
+                const contentElement = messageElement.querySelector('.message-content');
+                // Only ensure there's a typing animation, don't update content with raw stream
+                if (contentElement && !contentElement.querySelector('.typing-animation')) {
+                    contentElement.innerHTML = '';
+                    const thinkingDiv = document.createElement('div');
+                    thinkingDiv.className = 'typing-animation';
+                    thinkingDiv.innerHTML = `<span class="typing-dot"></span><span class="typing-dot"></span><span class="typing-dot"></span>`;
+                    contentElement.appendChild(thinkingDiv);
+                }
+            }
+            return;
+        }
+        
+        // For non-routing streams, proceed normally
         AppState.currentMessage.content = text;
         UI.updateAIMessage(AppState.currentMessage.id, text);
     }
@@ -1200,6 +1272,9 @@ async function executeRoutingPhase() {
         // Create new abort controller for this request
         AppState.abortController = new AbortController();
         
+        // Set routing stream flag BEFORE API call
+        AppState.isRoutingStream = true;
+        
         // Call the processRoutingQuery function from AgentAPI-rules.js
         const routingResult = await processRoutingQuery(
             AppState.routingPrompt,
@@ -1211,6 +1286,9 @@ async function executeRoutingPhase() {
             AppState.settings,
             AppState.abortController
         );
+        
+        // Clear routing stream flag IMMEDIATELY after API call
+        AppState.isRoutingStream = false;
 
         // Handle the result based on the action field
         switch (routingResult.action) {
@@ -1284,6 +1362,8 @@ async function executeRoutingPhase() {
         }
 
     } catch (error) {
+        // Clear routing stream flag in case of error
+        AppState.isRoutingStream = false;
         console.error("Error during routing phase:", error);
         const errorMessage = error.message || "Routing error.";
         AppState.lastError = errorMessage;
@@ -1293,6 +1373,8 @@ async function executeRoutingPhase() {
         UI.setThinkingState(false, `Error: ${errorMessage.substring(0, 50)}...`);
         AppState.conversationPhase = 'routing'; // Reset phase on error
     } finally {
+        // Ensure routing stream flag is cleared in finally block
+        AppState.isRoutingStream = false;
         AppState.currentMessage = null; // Clear current streaming message ID
         UI.updateTokenCount();
         // Re-enable input ONLY if waiting for user (i.e., scoping question was asked)
