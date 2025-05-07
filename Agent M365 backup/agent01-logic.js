@@ -738,9 +738,8 @@ async function handleSendMessage() {
     // Check if we're already in a technical conversation
     if (AppState.conversationPhase === 'technical_response' && AppState.identifiedTechnology) {
         // Continue with the same technology specialist
-        // DO NOT update AppState.originalUserQuery here. It should hold the query that INITIATED the tech topic.
-        // The new messageText (follow-up query) is already in AppState.chatHistory.
-        await executeTechnicalPhase(); // executeTechnicalPhase will use AppState.originalUserQuery and AppState.chatHistory
+        AppState.originalUserQuery = messageText; // Update with the follow-up query
+        await executeTechnicalPhase(); // Execute technical phase with the existing specialist
     } else {
         // Reset state for a new routing sequence
         AppState.conversationPhase = 'routing';
@@ -1348,24 +1347,6 @@ async function executeTechnicalPhase() {
             throw new Error("Failed to format messages for technical phase.");
         }
 
-        // Add detailed debugging logs
-        console.log("Technical Messages Structure:");
-        console.log("Original User Query:", AppState.originalUserQuery);
-        console.log("Identified Technology:", AppState.identifiedTechnology);
-        console.log("Message Count:", messages.length);
-        
-        // Log each message's role and content (truncated)
-        messages.forEach((msg, idx) => {
-            console.log(`Message[${idx}]: role=${msg.role}, content=${msg.content.substring(0, 50)}${msg.content.length > 50 ? '...' : ''}`);
-        });
-        
-        // Look for potential issues
-        for (let i = 1; i < messages.length; i++) {
-            if (messages[i].role === messages[i-1].role) {
-                console.error(`API ERROR RISK: Messages ${i-1} and ${i} both have role "${messages[i].role}"`);
-            }
-        }
-
         console.log("Technical Messages Ready:", messages.length, "messages");
         
         try {
@@ -1417,6 +1398,8 @@ async function executeTechnicalPhase() {
         AppState.routingAgentOutputText = null;
     } finally {
         AppState.currentMessage = null;
+        // Reset only originalUserQuery as it was consumed in this response
+        AppState.originalUserQuery = null;
         UI.updateTokenCount();
         // Re-enable input for the next query
         DOM.userInput.disabled = false;

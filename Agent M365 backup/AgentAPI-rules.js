@@ -241,8 +241,73 @@ export function formatTechnicalMessages(technicalPrompt, originalQuery, routingC
             messages.push({ role: 'system', content: "Provide detailed technical steps." });
         }
 
-        // 2. Add the initiating user query for this technology topic.
-        // This ensures the first non-system message is from the user.
+        // Find the conversation history with this technology specialist
+        let relevantHistory = [];
+        
+        // Get messages after we identified the technology
+        let foundTechStart = false;
+        let lastMessageWasFromUser = false;
+        
+        // 1. Look for the routing message that identified the technology
+        for (let i = 0; i < chatHistory.length; i++) {
+            const message = chatHistory[i];
+            
+            // Skip system messages, current placeholder, greetings and errors
+            if (message.role === 'system' || 
+                (currentMessage && message.id === currentMessage.id) || 
+                message.isGreeting || 
+                message.isError) {
+                continue;
+            }
+            
+            // First look for the routing message that identified the technology
+            if (!foundTechStart && message.role === 'assistant' && 
+                message.content.includes(`[TECH_IDENTIFIED: ${identifiedTechnology}]`)) {
+                foundTechStart = true;
+                continue; // Skip the routing message itself
+            }
+            
+            // Once we've found the tech start, include all subsequent messages
+            if (foundTechStart) {
+                relevantHistory.push({ role: message.role, content: message.content });
+                lastMessageWasFromUser = message.role === 'user';
+            }
+        }
+        
+        // If we have history, process it to ensure proper alternation
+        let processedHistory = [];
+        if (relevantHistory.length > 0) {
+            let lastRole = null;
+            
+            for (const msg of relevantHistory) {
+                // Skip consecutive messages with the same role
+                if (lastRole !== msg.role) {
+                    processedHistory.push(msg);
+                    lastRole = msg.role;
+                }
+            }
+        }
+        
+        // Add conversation history before adding the current query
+        // but only if it ends with an assistant message
+        if (processedHistory.length > 0) {
+            if (processedHistory[processedHistory.length - 1].role === 'assistant') {
+                messages.push(...processedHistory);
+                lastMessageWasFromUser = false;
+            } else {
+                // If history ends with user, only include up to the last assistant message
+                let trimmedHistory = [];
+                for (let i = 0; i < processedHistory.length - 1; i++) {
+                    trimmedHistory.push(processedHistory[i]);
+                }
+                if (trimmedHistory.length > 0) {
+                    messages.push(...trimmedHistory);
+                    lastMessageWasFromUser = false;
+                }
+            }
+        }
+        
+        // Finally, add the current user query
         if (originalQuery) {
             messages.push({ role: 'user', content: originalQuery });
         } else {
@@ -250,47 +315,7 @@ export function formatTechnicalMessages(technicalPrompt, originalQuery, routingC
             return null; // Cannot proceed without the query
         }
 
-        // 3. Add subsequent conversation history with this specific technical specialist.
-        // This history starts *after* the routing agent's message that identified the technology.
-        let techRouterMessageFound = false;
-        let lastAddedRole = 'user'; // Set because we just added the originalQuery
-
-        for (const message of chatHistory) {
-            if (!techRouterMessageFound) {
-                // Look for the routing message that triggered the handoff to this specialist
-                if (message.role === 'assistant' && message.content && message.content.includes(`[TECH_IDENTIFIED: ${identifiedTechnology}]`)) {
-                    techRouterMessageFound = true;
-                }
-                continue; // Skip all messages up to and including the router's handoff message
-            }
-
-            // Now processing messages *after* the router's handoff.
-            // These should be alternating assistant (specialist) responses and user (follow-up) messages.
-
-            // Skip system messages, current placeholder, and greetings/errors in this part of history
-            if ((currentMessage && message.id === currentMessage.id) ||
-                message.isGreeting ||
-                message.isError ||
-                message.role === 'system') {
-                continue;
-            }
-
-            // Add the message if it's from user or assistant and alternates correctly
-            if ((message.role === 'user' || message.role === 'assistant') && message.role !== lastAddedRole) {
-                // Ensure we don't re-add the originalQuery if it somehow appears again here
-                if (message.role === 'user' && message.content === originalQuery) {
-                    continue; // Skip if this is the original query (already added)
-                }
-                messages.push({ role: message.role, content: message.content });
-                lastAddedRole = message.role;
-            } else if (message.role === lastAddedRole) {
-                // This indicates an issue with chatHistory or the logic, log it.
-                // DeepSeek API will reject successive messages of the same role.
-                console.warn(`FormatTechnicalMessages: Skipping message for API due to same role as last. Role: ${message.role}, Content: "${message.content.substring(0, 50)}..."`);
-            }
-        }
-
-        console.log("Formatted Technical Messages for API:", messages.map(m => ({role: m.role, content: m.content.substring(0,70) + (m.content.length > 70 ? "..." : "")})));
+        console.log("Formatted Technical Messages:", messages.map(m => `${m.role}: ${m.content.substring(0, 30)}...`));
         return messages;
     } catch (error) {
         console.error("Error formatting technical messages:", error);
@@ -444,86 +469,6 @@ export async function processRoutingQuery(
 }
 
 /**
- * Validates and corrects message sequence for DeepSeek API requirements
- * 1. Ensures first non-system message is from 'user'
- * 2. Ensures strictly alternating user/assistant messages
- */
-function validateDeepSeekMessages(messages) {
-    if (!messages || messages.length === 0) {
-        console.error("Empty messages array provided to validateDeepSeekMessages");
-        return messages;
-    }
-
-    console.log("Validating message sequence for DeepSeek API...");
-    
-    // Make a deep copy to avoid modifying the original
-    const result = JSON.parse(JSON.stringify(messages));
-    let hasChanges = false;
-    
-    // Find the index of the first non-system message
-    let firstNonSystemIndex = result.findIndex(msg => msg.role !== 'system');
-    
-    // If no non-system messages, nothing to fix
-    if (firstNonSystemIndex === -1) {
-        console.warn("No non-system messages found in the sequence");
-        return result;
-    }
-    
-    // Fix 1: Ensure first non-system message is from user
-    if (result[firstNonSystemIndex].role !== 'user') {
-        console.warn("First non-system message must be from user, fixing...");
-        // If it's an assistant message, we need to insert a user message before it
-        result.splice(firstNonSystemIndex, 0, {
-            role: 'user',
-            content: 'Please assist me with this context.'
-        });
-        hasChanges = true;
-        firstNonSystemIndex++; // Adjust index after insertion
-    }
-    
-    // Fix 2: Ensure messages alternate between user and assistant
-    for (let i = firstNonSystemIndex + 1; i < result.length; i++) {
-        const prevRole = result[i-1].role;
-        const currentRole = result[i].role;
-        
-        // Skip system messages
-        if (currentRole === 'system') {
-            continue;
-        }
-        
-        // Check if current message has same role as previous non-system message
-        if (currentRole === prevRole) {
-            console.warn(`Found consecutive ${currentRole} messages at positions ${i-1} and ${i}, fixing...`);
-            
-            // Insert an appropriate message to fix alternation
-            const fixRole = currentRole === 'user' ? 'assistant' : 'user';
-            const fixContent = fixRole === 'user' 
-                ? 'Please continue.' 
-                : 'I understand. Let me assist with that.';
-            
-            result.splice(i, 0, {
-                role: fixRole,
-                content: fixContent
-            });
-            
-            hasChanges = true;
-            i++; // Skip the inserted message in next iteration
-        }
-    }
-    
-    if (hasChanges) {
-        console.log("Fixed DeepSeek message sequence:");
-        result.forEach((msg, idx) => {
-            console.log(`Message[${idx}]: role=${msg.role}, content=${msg.content.substring(0, 30)}...`);
-        });
-    } else {
-        console.log("Message sequence already valid for DeepSeek API");
-    }
-    
-    return result;
-}
-
-/**
  * Call LLM API
  */
 export async function callLlmApi(messages, apiKey, selectedModel, settings, abortController) {
@@ -544,19 +489,15 @@ export async function callLlmApi(messages, apiKey, selectedModel, settings, abor
         endpoint = API_CONFIG.baseUrl;
         headers = { 'Content-Type': 'application/json', 'Authorization': `Bearer ${apiKey}` };
         
-        // Add message validation and auto-correction for DeepSeek API
-        // This will automatically fix common issues with message sequence
-        const validatedMessages = validateDeepSeekMessages(messages);
-        
         // Check if the last message is from assistant - in that case use prefix mode
-        const needsPrefixMode = validatedMessages.length > 0 && validatedMessages[validatedMessages.length - 1].role === 'assistant';
+        const needsPrefixMode = messages.length > 0 && messages[messages.length - 1].role === 'assistant';
         
         // Verify that the first non-system message is from a user
         let foundNonSystemMessage = false;
-        for (let i = 0; i < validatedMessages.length; i++) {
-            if (validatedMessages[i].role !== 'system') {
+        for (let i = 0; i < messages.length; i++) {
+            if (messages[i].role !== 'system') {
                 foundNonSystemMessage = true;
-                if (validatedMessages[i].role !== 'user') {
+                if (messages[i].role !== 'user') {
                     console.error("Error: First non-system message must be from user");
                     throw new Error("First non-system message must be from user. This is required by the DeepSeek API.");
                 }
@@ -566,7 +507,7 @@ export async function callLlmApi(messages, apiKey, selectedModel, settings, abor
         
         body = JSON.stringify({
             model: API_CONFIG.models[selectedModel]?.modelName || selectedModel,
-            messages: validatedMessages,
+            messages: messages,
             temperature: settings.temperature,
             max_tokens: settings.maxTokens,
             top_p: settings.topP,
