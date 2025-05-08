@@ -34,8 +34,8 @@ export const CONFIG = {
         cubeSize: 2.0,
         rotationSpeed: 0.0015,
         morphDuration: {
-            standby: 2000,  // 2 seconds
-            thinking: 1000  // 1 second
+            standby: 4500,  // Increased from 3500 for slower, more visible staggered morphing
+            thinking: 2500  // Increased from 2000 for slower, more visible staggered morphing
         },
         morphInterval: 10000, // 10 seconds in standby mode
         colors: {
@@ -62,8 +62,8 @@ export const CONFIG = {
 
     // Animation Transitions
     transitions: {
-        thinkingEnterDuration: 1500, // ms
-        standbyEnterDuration: 2000,  // ms
+        thinkingEnterDuration: 2500, // ms - was 1500, increased for smoother transition
+        standbyEnterDuration: 2500,  // ms - was 2000, increased for consistency
     },
 
     // API Settings (Reference from API_CONFIG)

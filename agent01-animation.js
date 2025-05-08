@@ -15,7 +15,7 @@ if (typeof THREE === 'undefined' || typeof anime === 'undefined') {
     // Optionally throw an error or return a dummy object
 }
 
-const Animation = {
+export const Animation = {
     scene: null,
     camera: null,
     renderer: null,
@@ -28,6 +28,9 @@ const Animation = {
     animationFrameId: null,
     neuralConnections: null, // Store the neural connections mesh
     connectionVertices: [], // Store connection points
+    raycaster: new THREE.Raycaster(),
+    mouse: new THREE.Vector2(-10, -10), // Initialize off-screen
+    INTERSECTED: null,
 
     /**
      * Initialize the animation system
@@ -123,15 +126,17 @@ const Animation = {
         geometry.setAttribute('targetPosition', new THREE.Float32BufferAttribute(cubePositions, 3));
         geometry.setAttribute('tesseractPosition', new THREE.Float32BufferAttribute(tesseractPositions, 3));
 
-        // Generate particle indices
-        const particleIndices = new Float32Array(CONFIG.particles.count);
-        for (let i = 0; i < CONFIG.particles.count; i++) particleIndices[i] = i;
-        geometry.setAttribute('particleIndex', new THREE.Float32BufferAttribute(particleIndices, 1));
-        
         // Generate random values for each particle (for variation)
         const randomValues = new Float32Array(CONFIG.particles.count);
         for (let i = 0; i < CONFIG.particles.count; i++) randomValues[i] = Math.random();
         geometry.setAttribute('a_random', new THREE.Float32BufferAttribute(randomValues, 1));
+        
+        // Add morph delay attribute for staggered morphing
+        const morphDelays = new Float32Array(CONFIG.particles.count);
+        for (let i = 0; i < CONFIG.particles.count; i++) {
+            morphDelays[i] = Math.random() * 0.8; // Random delay up to 0.8 (was 0.5) of total morph time
+        }
+        geometry.setAttribute('a_morphDelay', new THREE.Float32BufferAttribute(morphDelays, 1));
         
         // Initialize highlight values (for interactive effects)
         const highlightValues = new Float32Array(CONFIG.particles.count);
@@ -161,7 +166,9 @@ const Animation = {
                 u_noiseScale: { value: 0.6 }, // ENHANCEMENT: Slightly increased noise scale for more detailed turbulence
                 u_noiseSpeed: { value: 0.15 }, // ENHANCEMENT: Slightly faster noise animation
                 u_noiseStrength: { value: 0.07 }, // ENHANCEMENT: Slightly stronger noise effect
-                u_hoverIntensity: { value: 0.25 }, // ENHANCEMENT: Stronger hover feedback
+                // Removed hover/click related uniforms
+                u_sparkleIntensity: { value: 0.0 }, // For thinking mode sparkle effect
+                u_thinkingIntensity: { value: 0.0 } // 0 for standby, 1 for thinking (for fragment shader)
             },
             vertexShader: vertexShader,
             fragmentShader: fragmentShader,
@@ -180,27 +187,30 @@ const Animation = {
      * Create neural network connections
      */
     createNeuralConnections: function() {
-        // ENHANCEMENT: Use a brighter, more energetic color for connections.
         const lineMaterial = new THREE.LineBasicMaterial({
-            color: 0x00aaff, // ENHANCEMENT: Brighter cyan/blue
+            color: 0x00ffff, // Brighter Cyan/Aqua
             transparent: true,
-            opacity: 0.0, // Start invisible
-            linewidth: 1.5, // ENHANCEMENT: Slightly thicker lines (note: linewidth > 1 has limitations)
+            opacity: 0.0,
+            linewidth: 1.0, // Linewidth > 1 has limitations in WebGL
             blending: THREE.AdditiveBlending
         });
 
+        // Each "connection" will now be made of multiple segments for a jagged look
+        const segmentsPerConnection = 5; // Number of jagged segments
+        const numConnections = Math.min(400, Math.floor(CONFIG.particles.count * 0.05)); // Increased number of connections
+
+        // Vertices: numConnections * segmentsPerConnection * 2 points * 3 coords
+        const vertices = new Float32Array(numConnections * segmentsPerConnection * 2 * 3);
         const lineGeometry = new THREE.BufferGeometry();
-        
-        // ENHANCEMENT: Increase connection density for a richer network, if performance allows.
-        const numConnections = Math.min(1500, Math.floor(CONFIG.particles.count * 0.08));
-        
-        const vertices = new Float32Array(numConnections * 2 * 3); 
         lineGeometry.setAttribute('position', new THREE.BufferAttribute(vertices, 3));
-        
+
         this.neuralConnections = new THREE.LineSegments(lineGeometry, lineMaterial);
         this.scene.add(this.neuralConnections);
-        
-        this.neuralConnections.userData = { numConnections: numConnections };
+
+        this.neuralConnections.userData = { 
+            numConnections: numConnections, 
+            segmentsPerConnection: segmentsPerConnection 
+        };
         
         const maxRadius = Math.max(
             CONFIG.particles.sphereRadius,
@@ -209,23 +219,24 @@ const Animation = {
         );
         this.neuralConnections.userData.maxRadius = maxRadius;
         
-        this.connectionVertices = [];
+        this.connectionVertices = []; // This will now store start/end for the whole jagged path
         for (let i = 0; i < numConnections; i++) {
             const startParticleIndex = Math.floor(Math.random() * CONFIG.particles.count);
             const endParticleIndex = this.findNearbyParticle(startParticleIndex);
-            
+
             this.connectionVertices.push({
                 startParticleIndex: startParticleIndex,
                 endParticleIndex: endParticleIndex,
-                signalProgress: Math.random(), 
-                // ENHANCEMENT: Wider range of signal speeds for more dynamic variety
-                signalSpeed: 0.3 + Math.random() * 1.2, 
-                active: false, 
-                activationTime: Math.random() * 3, // ENHANCEMENT: Shorter max activation time for quicker ramp-up
-                pulsePhase: Math.random() * Math.PI * 2, 
-                // ENHANCEMENT: Faster pulse speeds for more energetic visuals
-                pulseSpeed: 8 + Math.random() * 15, 
-                visible: Math.random() > 0.3 // ENHANCEMENT: More connections initially visible for flickering
+                // signalProgress, signalSpeed, pulsePhase, pulseSpeed are for the "pulse" along the path
+                signalProgress: Math.random(),
+                signalSpeed: 0.5 + Math.random() * 1.5,
+                active: false,
+                activationTime: Math.random() * 2, // Quicker activation
+                pulsePhase: Math.random() * Math.PI * 2,
+                pulseSpeed: 10 + Math.random() * 20, // Faster pulses
+                visible: Math.random() > 0.5, // More chance of being visible initially
+                // Store random offsets for jaggedness, one per segment
+                jaggednessOffsets: Array.from({length: segmentsPerConnection - 1}, () => (Math.random() - 0.5) * 0.6) // Increased jaggedness (was 0.4)
             });
         }
     },
@@ -463,31 +474,130 @@ const Animation = {
         AppState.visualizationState.currentMode = "thinking";
         if (DOM.modeIndicator) DOM.modeIndicator.textContent = "thinking";
 
-        this.particleMaterial.uniforms.u_isThinking.value = true;
-        if (AppState.visualizationState.currentShape === "sphere") this.morphTo("cube"); // Or tesseract for more immediate complexity
+        // Use the transition duration from CONFIG
+        const transitionDuration = CONFIG.transitions.thinkingEnterDuration;
+        
+        this.particleMaterial.uniforms.u_isThinking.value = true; // For vertex shader wave logic
+        
+        // Queue the shape transition to synchronize with other animations
+        // Only morphing to a more complex shape for thinking mode
+        if (AppState.visualizationState.currentShape === "sphere") {
+            // Instead of calling morphTo directly, we'll animate the morphProgress here
+            // to ensure it's synchronized with other transitions
+            const targetProgress = 0.5; // cube
+            
+            anime({
+                targets: AppState.visualizationState,
+                morphProgress: targetProgress,
+                duration: transitionDuration,
+                easing: 'easeOutQuad',
+                update: () => {
+                    if (this.particleMaterial) {
+                        this.particleMaterial.uniforms.u_morphProgress.value = AppState.visualizationState.morphProgress;
+                    }
+                },
+                complete: () => {
+                    AppState.visualizationState.currentShape = "cube";
+                }
+            });
+        }
 
-        // ENHANCEMENT: More intense light and glow for thinking mode
-        if (this.pointLight) anime({ targets: this.pointLight, intensity: CONFIG.particles.lightIntensity.thinking * 1.5, duration: 700, easing: 'easeOutExpo' });
-        anime({ targets: AppState.visualizationState, glowIntensity: 0.8, duration: 700, easing: 'easeOutExpo', update: () => { if (this.particleMaterial) this.particleMaterial.uniforms.u_glowIntensity.value = AppState.visualizationState.glowIntensity; } });
-        // ENHANCEMENT: More dynamic wave animation
-        anime({ targets: AppState.visualizationState, waveFrequency: CONFIG.particles.thinking.waveFrequencyEnd * 1.2, duration: 1200, easing: 'easeInOutSine' });
-        this.particleMaterial.uniforms.u_waveAmplitude.value = CONFIG.particles.thinking.waveAmplitude * 1.3;
+        // Make all animations use the same duration for smoother transition
+        if (this.pointLight) {
+            anime({ 
+                targets: this.pointLight, 
+                intensity: CONFIG.particles.lightIntensity.thinking * 1.5, 
+                duration: transitionDuration, 
+                easing: 'easeOutQuad' 
+            });
+        }
+        
+        // Glow intensity animation
+        anime({ 
+            targets: AppState.visualizationState, 
+            glowIntensity: 0.8, 
+            duration: transitionDuration, 
+            easing: 'easeOutQuad', 
+            update: () => { 
+                if (this.particleMaterial) {
+                    this.particleMaterial.uniforms.u_glowIntensity.value = AppState.visualizationState.glowIntensity;
+                }
+            } 
+        });
+        
+        // Wave animation
+        anime({ 
+            targets: AppState.visualizationState, 
+            waveFrequency: CONFIG.particles.thinking.waveFrequencyEnd * 1.2, 
+            duration: transitionDuration, 
+            easing: 'easeOutQuad' 
+        });
+        
+        // Wave amplitude animation
+        anime({
+            targets: this.particleMaterial.uniforms.u_waveAmplitude,
+            value: CONFIG.particles.thinking.waveAmplitude * 1.3,
+            duration: transitionDuration,
+            easing: 'easeOutQuad'
+        });
+        
+        // --- ADD THESE NEW ANIMATIONS ---
+        anime({
+            targets: this.particleMaterial.uniforms.u_thinkingIntensity,
+            value: 1.0,
+            duration: transitionDuration,
+            easing: 'easeOutQuad'
+        });
+
+        anime({
+            targets: this.particleMaterial.uniforms.u_noiseStrength,
+            value: 0.35, // Target thinking mode noise strength
+            duration: transitionDuration,
+            easing: 'easeOutQuad'
+        });
+
+        anime({
+            targets: this.particleMaterial.uniforms.u_noiseSpeed,
+            value: 0.6, // Target thinking mode noise speed
+            duration: transitionDuration,
+            easing: 'easeOutQuad'
+        });
+
+        anime({
+            targets: this.particleMaterial.uniforms.u_sparkleIntensity,
+            value: 1.2, // Target thinking mode sparkle intensity
+            duration: transitionDuration,
+            easing: 'easeOutQuad'
+        });
+        // --- END OF ADDED ANIMATIONS ---
         
         if (this.neuralConnections) {
+            // Neural connections animation with the same duration
             anime({
                 targets: this.neuralConnections.material,
-                opacity: 0.9, // ENHANCEMENT: Brighter connections
-                duration: 1200, // ENHANCEMENT: Slightly longer fade-in for dramatic effect
+                opacity: 0.8,
+                duration: transitionDuration,
                 easing: 'easeOutQuad'
             });
             
-            // ENHANCEMENT: Staggered activation of connections for a "powering up" feel
-            this.connectionVertices.forEach((connection, index) => {
-                // Use a timeout that respects existing activationTime logic if needed, or simplify
+            // Stagger neural connection activations over the transition duration
+            this.connectionVertices.forEach(connection => {
+                // Regenerate jaggedness offsets for all connections
+                const segmentsPerConnection = this.neuralConnections.userData.segmentsPerConnection;
+                connection.jaggednessOffsets = Array.from(
+                    {length: segmentsPerConnection - 1}, 
+                    () => (Math.random() - 0.5) * 0.35
+                );
+                
+                // Distribute activation times across the full transition duration
                 setTimeout(() => {
                     connection.active = true;
-                }, connection.activationTime * 200); // Scale activationTime for noticeable stagger
+                    connection.pulseSpeed = 15 + Math.random() * 25;
+                    connection.signalSpeed = 0.8 + Math.random() * 1.8;
+                }, connection.activationTime * transitionDuration / 3); // Distribute over first third of transition
             });
+            
+            this.neuralConnections.material.color.set(0x00ffff);
         }
     },
 
@@ -496,22 +606,118 @@ const Animation = {
         AppState.visualizationState.currentMode = "standby";
         if (DOM.modeIndicator) DOM.modeIndicator.textContent = "standby";
 
-        this.particleMaterial.uniforms.u_isThinking.value = false;
-        if (this.pointLight) anime({ targets: this.pointLight, intensity: CONFIG.particles.lightIntensity.standby, duration: 700, easing: 'easeOutQuad' });
-        anime({ targets: AppState.visualizationState, glowIntensity: 0.05, duration: 700, easing: 'easeOutQuad', update: () => { if (this.particleMaterial) this.particleMaterial.uniforms.u_glowIntensity.value = AppState.visualizationState.glowIntensity; } }); // ENHANCEMENT: Subtle residual glow
-        anime({ targets: this.particleMaterial.uniforms.u_waveAmplitude, value: 0, duration: 700, easing: 'easeOutQuad' });
+        // Use the transition duration from CONFIG
+        const transitionDuration = CONFIG.transitions.standbyEnterDuration;
+        
+        this.particleMaterial.uniforms.u_isThinking.value = false; // For vertex shader wave logic
+        
+        // Queue the shape transition to synchronize with other animations
+        // Only morphing to sphere for standby mode
+        if (AppState.visualizationState.currentShape !== "sphere") {
+            // Instead of calling morphTo directly, we'll animate the morphProgress here
+            // to ensure it's synchronized with other transitions
+            const targetProgress = 0; // sphere
+            
+            anime({
+                targets: AppState.visualizationState,
+                morphProgress: targetProgress,
+                duration: transitionDuration,
+                easing: 'easeOutQuad',
+                update: () => {
+                    if (this.particleMaterial) {
+                        this.particleMaterial.uniforms.u_morphProgress.value = AppState.visualizationState.morphProgress;
+                    }
+                },
+                complete: () => {
+                    AppState.visualizationState.currentShape = "sphere";
+                    // Reverse rotation direction when morphing is complete
+                    AppState.visualizationState.rotationDirection *= -1;
+                }
+            });
+        }
+        
+        // Make all animations use the same duration for smoother transition
+        if (this.pointLight) {
+            anime({ 
+                targets: this.pointLight, 
+                intensity: CONFIG.particles.lightIntensity.standby, 
+                duration: transitionDuration, 
+                easing: 'easeOutQuad' 
+            });
+        }
+        
+        // Glow intensity animation
+        anime({ 
+            targets: AppState.visualizationState, 
+            glowIntensity: 0.05, 
+            duration: transitionDuration, 
+            easing: 'easeOutQuad', 
+            update: () => { 
+                if (this.particleMaterial) {
+                    this.particleMaterial.uniforms.u_glowIntensity.value = AppState.visualizationState.glowIntensity; 
+                }
+            } 
+        });
+        
+        // Wave amplitude animation
+        anime({
+            targets: this.particleMaterial.uniforms.u_waveAmplitude,
+            value: 0,
+            duration: transitionDuration,
+            easing: 'easeOutQuad'
+        });
+        
+        // Reset wave frequency immediately since it's not directly visible
         AppState.visualizationState.waveFrequency = CONFIG.particles.thinking.waveFrequencyStart;
         
+        // --- ADD THESE NEW ANIMATIONS ---
+        anime({
+            targets: this.particleMaterial.uniforms.u_thinkingIntensity,
+            value: 0.0,
+            duration: transitionDuration,
+            easing: 'easeOutQuad'
+        });
+
+        anime({
+            targets: this.particleMaterial.uniforms.u_noiseStrength,
+            value: 0.07, // Target standby mode noise strength
+            duration: transitionDuration,
+            easing: 'easeOutQuad'
+        });
+
+        anime({
+            targets: this.particleMaterial.uniforms.u_noiseSpeed,
+            value: 0.15, // Target standby mode noise speed
+            duration: transitionDuration,
+            easing: 'easeOutQuad'
+        });
+
+        anime({
+            targets: this.particleMaterial.uniforms.u_sparkleIntensity,
+            value: 0.0, // Target standby mode sparkle intensity (off)
+            duration: transitionDuration,
+            easing: 'easeOutQuad'
+        });
+        // --- END OF ADDED ANIMATIONS ---
+        
         if (this.neuralConnections) {
+            // Neural connections animation with the same duration
             anime({
                 targets: this.neuralConnections.material,
-                opacity: 0.05, // ENHANCEMENT: Keep connections very faintly visible in standby
-                duration: 500,
+                opacity: 0.05,
+                duration: transitionDuration,
                 easing: 'easeOutQuad'
             });
             
+            // Stagger neural connection deactivations over the transition duration
             this.connectionVertices.forEach(connection => {
-                connection.active = false; // Some could remain active but dim if desired
+                // Stagger deactivation times for a more natural fade-out
+                setTimeout(() => {
+                    connection.active = false;
+                    // Slow down pulse speeds for a calmer appearance
+                    connection.pulseSpeed = 5 + Math.random() * 10;
+                    connection.signalSpeed = 0.3 + Math.random() * 0.5;
+                }, Math.random() * transitionDuration / 2); // Random timing within first half of transition
             });
         }
     },
@@ -526,137 +732,215 @@ const Animation = {
 
         if (Math.abs(AppState.visualizationState.morphProgress - targetProgress) < 0.01) return;
 
-        // ENHANCEMENT: Faster, more decisive morphing, especially in thinking mode
-        const duration = AppState.visualizationState.currentMode === "standby" ? CONFIG.particles.morphDuration.standby * 0.8 : CONFIG.particles.morphDuration.thinking * 0.7;
-        const easing = AppState.visualizationState.currentMode === "standby" ? 'easeInOutSine' : 'spring(1, 80, 10, 0)'; // ENHANCEMENT: Springy easing for thinking morph
+        // Use consistent durations that align with mode transitions
+        const baseDuration = AppState.visualizationState.currentMode === "standby" 
+            ? CONFIG.particles.morphDuration.standby
+            : CONFIG.particles.morphDuration.thinking;
+        
+        // Calculate the actual duration based on how far we need to morph
+        // This prevents morphing from feeling too slow for small changes and too fast for large changes
+        const progressDifference = Math.abs(AppState.visualizationState.morphProgress - targetProgress);
+        const duration = baseDuration * (0.5 + progressDifference * 0.5);
+        
+        // Use consistent easing for better transitions
+        const easing = 'easeInOutQuad';
 
         anime({
             targets: AppState.visualizationState,
             morphProgress: targetProgress,
             duration: duration,
             easing: easing,
-            update: () => { this.particleMaterial.uniforms.u_morphProgress.value = AppState.visualizationState.morphProgress; },
+            update: () => { 
+                if (this.particleMaterial) {
+                    this.particleMaterial.uniforms.u_morphProgress.value = AppState.visualizationState.morphProgress; 
+                }
+            },
             complete: () => {
                 AppState.visualizationState.currentShape = targetShape;
                 AppState.visualizationState.morphProgress = targetProgress;
-                if (AppState.visualizationState.currentMode === "standby") AppState.visualizationState.rotationDirection *= -1;
-                console.log("Morph complete. Current shape:", targetShape);
+                if (AppState.visualizationState.currentMode === "standby") {
+                    AppState.visualizationState.rotationDirection *= -1;
+                }
             }
         });
+        
         AppState.visualizationState.lastMorphTime = this.elapsedTime;
     },
 
     updateNeuralConnections: function(deltaTime) {
         if (!this.neuralConnections || !this.particles) return;
-        
-        const positionAttr = this.particles.geometry.getAttribute('position');
+
+        const particlePosAttr = this.particles.geometry.getAttribute('position');
         const targetAttr = this.particles.geometry.getAttribute('targetPosition');
         const tesseractAttr = this.particles.geometry.getAttribute('tesseractPosition');
         const morphProgress = AppState.visualizationState.morphProgress;
-        
+
         const linePositions = this.neuralConnections.geometry.getAttribute('position');
         const vertices = linePositions.array;
-        
-        const maxShapeRadius = this.neuralConnections.userData.maxRadius;
-        
-        this.connectionVertices.forEach((connection, index) => {
-            if (!connection.active && AppState.visualizationState.currentMode !== "thinking") { // ENHANCEMENT: Allow some standby connections to be faintly active if opacity is > 0
-                 if (this.neuralConnections.material.opacity < 0.01) { // Only fully hide if material is essentially invisible
-                    const lineIdx = index * 6;
+        const segmentsPerConnection = this.neuralConnections.userData.segmentsPerConnection;
+
+        let vertexOffset = 0;
+
+        this.connectionVertices.forEach((connection) => {
+            // Remove temporary forced visibility
+            // connection.visible = true;
+            
+            // Update pulse phase for flickering effect
+            connection.pulsePhase += connection.pulseSpeed * deltaTime * (connection.active ? 1 : 0.3);
+            const pulseValue = 0.5 + Math.sin(connection.pulsePhase) * 0.5;
+            
+            // Re-enable visibility calculation - more aggressively flickering in thinking mode
+            connection.visible = connection.active && pulseValue > 0.15 || // Was 0.2 - Make flicker slightly more frequent when active
+                       !connection.active && pulseValue > 0.95;
+            
+            // Skip remaining processing if connection is invisible and inactive
+            if (!connection.visible && !connection.active && this.neuralConnections.material.opacity < 0.1) {
+                for(let s = 0; s < segmentsPerConnection; s++) {
+                    const lineIdx = vertexOffset + s * 6;
                     vertices[lineIdx] = vertices[lineIdx + 3] = 0;
                     vertices[lineIdx + 1] = vertices[lineIdx + 4] = 0;
                     vertices[lineIdx + 2] = vertices[lineIdx + 5] = 0;
-                    return;
-                 }
-            }
-            
-            connection.pulsePhase += connection.pulseSpeed * deltaTime * (connection.active ? 1 : 0.3); // ENHANCEMENT: Slower pulse if inactive but visible
-            
-            // ENHANCEMENT: More organic flickering, less binary
-            const pulseValue = 0.5 + Math.sin(connection.pulsePhase) * 0.5; // Ranges 0 to 1
-            connection.visible = pulseValue > (connection.active ? 0.2 : 0.6); // More likely visible if active
-
-            if (!connection.visible && !connection.active && this.neuralConnections.material.opacity < 0.1) { // Stricter hiding for inactive standby
-                const lineIdx = index * 6;
-                vertices[lineIdx] = vertices[lineIdx + 3] = 0;
-                vertices[lineIdx + 1] = vertices[lineIdx + 4] = 0;
-                vertices[lineIdx + 2] = vertices[lineIdx + 5] = 0;
+                }
+                vertexOffset += segmentsPerConnection * 6;
                 return;
             }
-            
+
+            // Update signal progress
             connection.signalProgress += connection.signalSpeed * deltaTime * (connection.active ? 1 : 0.2);
             if (connection.signalProgress > 1) {
                 connection.signalProgress = 0;
-                // ENHANCEMENT: More frequent and slightly smarter rerouting
-                if (connection.active && Math.random() < 0.35) { 
+                
+                // More frequent rerouting for active connections in thinking mode
+                if (connection.active && Math.random() < 0.5) {
                     connection.endParticleIndex = this.findNearbyParticle(connection.startParticleIndex);
-                } else if (!connection.active && Math.random() < 0.05) { // Infrequent reroute for standby
-                    connection.endParticleIndex = this.findNearbyParticle(connection.startParticleIndex);
+                    
+                    // Also randomize the jaggedness for more dynamic appearance
+                    if (AppState.visualizationState.currentMode === "thinking") {
+                        connection.jaggednessOffsets = Array.from(
+                            {length: segmentsPerConnection - 1}, 
+                            () => (Math.random() - 0.5) * 0.6 // Increased from 0.3 to 0.6
+                        );
+                    }
                 }
             }
-            
-            const startIdx = connection.startParticleIndex * 3;
-            const startPos = new THREE.Vector3();
-            
-            if (morphProgress <= 0.5) {
-                const t = morphProgress * 2;
-                startPos.x = positionAttr.array[startIdx] * (1 - t) + targetAttr.array[startIdx] * t;
-                startPos.y = positionAttr.array[startIdx + 1] * (1 - t) + targetAttr.array[startIdx + 1] * t;
-                startPos.z = positionAttr.array[startIdx + 2] * (1 - t) + targetAttr.array[startIdx + 2] * t;
-            } else {
-                const t = (morphProgress - 0.5) * 2;
-                startPos.x = targetAttr.array[startIdx] * (1 - t) + tesseractAttr.array[startIdx] * t;
-                startPos.y = targetAttr.array[startIdx + 1] * (1 - t) + tesseractAttr.array[startIdx + 1] * t;
-                startPos.z = targetAttr.array[startIdx + 2] * (1 - t) + tesseractAttr.array[startIdx + 2] * t;
-            }
-            startPos.applyMatrix4(this.particles.matrixWorld);
-            
-            const endIdx = connection.endParticleIndex * 3;
-            const endPos = new THREE.Vector3();
-            
-            if (morphProgress <= 0.5) {
-                const t = morphProgress * 2;
-                endPos.x = positionAttr.array[endIdx] * (1 - t) + targetAttr.array[endIdx] * t;
-                endPos.y = positionAttr.array[endIdx + 1] * (1 - t) + targetAttr.array[endIdx + 1] * t;
-                endPos.z = positionAttr.array[endIdx + 2] * (1 - t) + targetAttr.array[endIdx + 2] * t;
-            } else {
-                const t = (morphProgress - 0.5) * 2;
-                endPos.x = targetAttr.array[endIdx] * (1 - t) + tesseractAttr.array[endIdx] * t;
-                endPos.y = targetAttr.array[endIdx + 1] * (1 - t) + tesseractAttr.array[endIdx + 1] * t;
-                endPos.z = targetAttr.array[endIdx + 2] * (1 - t) + tesseractAttr.array[endIdx + 2] * t;
-            }
-            endPos.applyMatrix4(this.particles.matrixWorld);
-            
-            const direction = new THREE.Vector3().subVectors(endPos, startPos);
-            const distance = direction.length();
-            
-            // ENHANCEMENT: Slightly longer pulses
-            const pulseLengthRatio = connection.active ? 0.3 : 0.15; // Longer pulses when active
-            const pulseLength = Math.max(0.05, distance * pulseLengthRatio); // Ensure minimum pulse length
-            
-            const currentSignalPos = connection.signalProgress * distance;
-            const pulseStartOffset = Math.max(0, currentSignalPos - pulseLength / 2);
-            const pulseEndOffset = Math.min(distance, currentSignalPos + pulseLength / 2);
 
-            const pulseStart = startPos.clone().add(direction.clone().normalize().multiplyScalar(pulseStartOffset));
-            const pulseEnd = startPos.clone().add(direction.clone().normalize().multiplyScalar(pulseEndOffset));
+            // Get start and end positions based on current morph state
+            const startP = this.getMorphedParticlePosition(
+                connection.startParticleIndex, 
+                particlePosAttr, targetAttr, tesseractAttr, morphProgress
+            );
+            const endP = this.getMorphedParticlePosition(
+                connection.endParticleIndex, 
+                particlePosAttr, targetAttr, tesseractAttr, morphProgress
+            );
             
-            const lineIdx = index * 6; 
+            // Apply world transformation
+            startP.applyMatrix4(this.particles.matrixWorld);
+            endP.applyMatrix4(this.particles.matrixWorld);
+
+            // Calculate main direction and length
+            const mainDirection = new THREE.Vector3().subVectors(endP, startP);
+            const mainLength = mainDirection.length();
             
-            if (!connection.visible && !connection.active) { // If not visible and not active, make the segment zero length effectively hiding it
-                 vertices[lineIdx] = vertices[lineIdx + 3] = startPos.x; // Collapse to start point
-                 vertices[lineIdx + 1] = vertices[lineIdx + 4] = startPos.y;
-                 vertices[lineIdx + 2] = vertices[lineIdx + 5] = startPos.z;
-            } else {
-                vertices[lineIdx] = pulseStart.x;
-                vertices[lineIdx + 1] = pulseStart.y;
-                vertices[lineIdx + 2] = pulseStart.z;
-                vertices[lineIdx + 3] = pulseEnd.x;
-                vertices[lineIdx + 4] = pulseEnd.y;
-                vertices[lineIdx + 5] = pulseEnd.z;
+            // Skip if the connection is too short
+            if (mainLength < 0.01) {
+                for(let s = 0; s < segmentsPerConnection; s++) {
+                    const lineIdx = vertexOffset + s * 6;
+                    vertices[lineIdx] = vertices[lineIdx + 3] = 0;
+                    vertices[lineIdx + 1] = vertices[lineIdx + 4] = 0;
+                    vertices[lineIdx + 2] = vertices[lineIdx + 5] = 0;
+                }
+                vertexOffset += segmentsPerConnection * 6;
+                return;
             }
+            
+            // Calculate perpendicular direction for jagged offsets
+            mainDirection.normalize();
+            // Create a better perpendicular vector primarily in the XY plane
+            let perpendicular = new THREE.Vector3(-mainDirection.y, mainDirection.x, 0.0);
+            if (perpendicular.lengthSq() < 0.0001) { // If mainDirection is mostly along Z-axis
+                perpendicular.set(0.0, -mainDirection.z, mainDirection.y);
+            }
+            perpendicular.normalize();
+
+            // Generate path points with jagged offsets
+            const segmentLength = mainLength / segmentsPerConnection;
+            const pathPoints = [startP.clone()];
+            
+            for (let s = 0; s < segmentsPerConnection - 1; s++) {
+                // Base point along the straight line
+                let nextBasePoint = startP.clone().addScaledVector(mainDirection, segmentLength * (s + 1));
+                
+                // Apply jagged offset perpendicular to main direction
+                let offset = connection.jaggednessOffsets[s];
+                
+                // Re-enable dynamic wiggle for thinking mode
+                if (connection.active && AppState.visualizationState.currentMode === "thinking") {
+                    // Add more pronounced time-based variation to the offset
+                    offset += Math.sin(this.elapsedTime * 5 + s * 1.5) * 0.2; // Increased from 0.12 to 0.2
+                }
+                
+                let midPointOffset = perpendicular.clone().multiplyScalar(offset * segmentLength * 0.7); // Increase multiplier for more visible jaggedness
+                pathPoints.push(nextBasePoint.add(midPointOffset));
+            }
+            
+            // Add end point
+            pathPoints.push(endP.clone());
+            
+            // Calculate total path length for signal progress
+            let totalPathLength = 0;
+            for (let i = 0; i < pathPoints.length - 1; i++) {
+                totalPathLength += pathPoints[i].distanceTo(pathPoints[i+1]);
+            }
+            if (totalPathLength < 0.01) totalPathLength = 0.01;
+
+            // Draw the pulse along the jagged path
+            // Pulse length is proportional to total path length, shorter for more electric appearance
+            const pulseLengthRatio = connection.active ? 0.15 : 0.05;
+            const pulseLengthWorld = Math.max(0.05, totalPathLength * pulseLengthRatio);
+            const signalPosWorld = connection.signalProgress * totalPathLength;
+
+            let accumulatedLength = 0;
+            
+            // Process each segment
+            for (let s = 0; s < segmentsPerConnection; s++) {
+                const segStart = pathPoints[s];
+                const segEnd = pathPoints[s+1];
+                const currentSegLength = segStart.distanceTo(segEnd);
+
+                // Calculate where on this segment the pulse should start and end
+                const pulseStartOnSeg = Math.max(0, signalPosWorld - accumulatedLength - pulseLengthWorld / 2);
+                const pulseEndOnSeg = Math.min(currentSegLength, signalPosWorld - accumulatedLength + pulseLengthWorld / 2);
+                
+                const lineIdx = vertexOffset + s * 6;
+                
+                // If the pulse is on this segment and the connection is visible
+                if (pulseEndOnSeg > pulseStartOnSeg && connection.visible) {
+                    const dir = new THREE.Vector3().subVectors(segEnd, segStart).normalize();
+                    const actualPulseStart = segStart.clone().addScaledVector(dir, pulseStartOnSeg);
+                    const actualPulseEnd = segStart.clone().addScaledVector(dir, pulseEndOnSeg);
+
+                    // Set line vertices
+                    vertices[lineIdx] = actualPulseStart.x;
+                    vertices[lineIdx + 1] = actualPulseStart.y;
+                    vertices[lineIdx + 2] = actualPulseStart.z;
+                    vertices[lineIdx + 3] = actualPulseEnd.x;
+                    vertices[lineIdx + 4] = actualPulseEnd.y;
+                    vertices[lineIdx + 5] = actualPulseEnd.z;
+                } else {
+                    // Pulse not on this segment or connection not visible - collapse to zero-length line
+                    vertices[lineIdx] = vertices[lineIdx + 3] = segStart.x;
+                    vertices[lineIdx + 1] = vertices[lineIdx + 4] = segStart.y;
+                    vertices[lineIdx + 2] = vertices[lineIdx + 5] = segStart.z;
+                }
+                
+                accumulatedLength += currentSegLength;
+            }
+            
+            vertexOffset += segmentsPerConnection * 6;
         });
-        
+
+        // Mark buffer as needing update
         linePositions.needsUpdate = true;
     },
 
@@ -676,10 +960,6 @@ const Animation = {
             this.particleMaterial.uniforms.u_time.value = this.elapsedTime;
             this.particleMaterial.uniforms.u_cameraPos.value = this.camera.position;
             
-            // ENHANCEMENT: More dynamic noise based on mode
-            this.particleMaterial.uniforms.u_noiseStrength.value = AppState.visualizationState.currentMode === "thinking" ? 0.12 : 0.07;
-            this.particleMaterial.uniforms.u_noiseSpeed.value = AppState.visualizationState.currentMode === "thinking" ? 0.25 : 0.15;
-
             if (AppState.visualizationState.currentMode === "thinking") {
                 this.particleMaterial.uniforms.u_waveFrequency.value = AppState.visualizationState.waveFrequency;
                 
@@ -703,10 +983,19 @@ const Animation = {
                 }
                 
                 this.updateNeuralConnections(deltaTime);
-                 // ENHANCEMENT: Make overall connection brightness pulse slightly in thinking mode
+                // ENHANCEMENT: Make neural connections flicker more erratically in thinking mode
                 if (this.neuralConnections && this.neuralConnections.material.opacity > 0) {
-                    const baseOpacity = 0.9; // From enterThinkingMode
-                    this.neuralConnections.material.opacity = baseOpacity - Math.abs(Math.sin(this.elapsedTime * 2.5)) * 0.3; // Pulsate opacity
+                    const baseOpacity = 0.8; // From enterThinkingMode
+                    // Quick, sharp, erratic flickers
+                    const flickerAmount = Math.random() * 0.6; // Was 0.4 - More extreme flicker for electrical effect
+                    this.neuralConnections.material.opacity = baseOpacity * (0.5 + flickerAmount); // Was 0.6 - Lower base to make flickering more noticeable
+                    
+                    // Make the connections more electric blue during peaks
+                    if (flickerAmount > 0.45) {
+                        this.neuralConnections.material.color.set(0x00ffff); // Bright cyan for peaks
+                    } else {
+                        this.neuralConnections.material.color.set(0x007fff); // More blue for valleys
+                    }
                 }
 
             } else { // Standby mode
@@ -788,8 +1077,23 @@ const Animation = {
         this.connectionVertices = [];
         this.camera = null;
         this.clock = null;
-    }
-};
+    },
 
-// Export the Animation module
-export { Animation };
+    // Helper function to get morphed particle position for neural connections
+    getMorphedParticlePosition: function(index, posAttr, targetAttr, tesseractAttr, morphProgress) {
+        const particleIndex3 = index * 3;
+        const pos = new THREE.Vector3();
+        if (morphProgress <= 0.5) {
+            const t = morphProgress * 2;
+            pos.x = posAttr.array[particleIndex3] * (1 - t) + targetAttr.array[particleIndex3] * t;
+            pos.y = posAttr.array[particleIndex3 + 1] * (1 - t) + targetAttr.array[particleIndex3 + 1] * t;
+            pos.z = posAttr.array[particleIndex3 + 2] * (1 - t) + targetAttr.array[particleIndex3 + 2] * t;
+        } else {
+            const t = (morphProgress - 0.5) * 2;
+            pos.x = targetAttr.array[particleIndex3] * (1 - t) + tesseractAttr.array[particleIndex3] * t;
+            pos.y = targetAttr.array[particleIndex3 + 1] * (1 - t) + tesseractAttr.array[particleIndex3 + 1] * t;
+            pos.z = targetAttr.array[particleIndex3 + 2] * (1 - t) + tesseractAttr.array[particleIndex3 + 2] * t;
+        }
+        return pos;
+    },
+};
